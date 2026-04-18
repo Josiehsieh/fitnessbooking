@@ -65,7 +65,7 @@ export default function Navbar({ currentScreen, onNavigate, isLoggedIn }: Navbar
             </button>
           )}
           <button 
-            onClick={() => onNavigate('schedule')}
+            onClick={() => onNavigate(isLoggedIn ? 'schedule' : 'login')}
             className="bg-gradient-to-br from-primary to-primary-dim text-on-primary px-6 md:px-8 py-2.5 md:py-3 rounded-full font-headline font-semibold text-sm hover:scale-105 transition-all shadow-lg shadow-primary/20"
           >
             {isLoggedIn ? '預約課程' : '立即加入'}
