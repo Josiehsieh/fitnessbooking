@@ -1,0 +1,26 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Python
+backend/venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Google credentials (NEVER commit)
+credentials.json
+service_account.json
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!metadata.json
+
+# Local startup scripts (contain Spreadsheet ID)
+start_backend.ps1
