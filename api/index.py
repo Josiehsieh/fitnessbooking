@@ -25,10 +25,26 @@ SCOPES = [
 # ── Google Sheets helpers ──────────────────────────────────────────────────────
 
 def _get_gc():
-    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
-    if not creds_json:
-        raise ValueError("環境變數 GOOGLE_CREDENTIALS_JSON 未設定")
-    creds_dict = json.loads(creds_json)
+    # Prefer base64-encoded credentials (more reliable on Vercel)
+    creds_b64 = os.environ.get("GOOGLE_CREDENTIALS_BASE64", "").strip()
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON", "").strip()
+
+    if creds_b64:
+        try:
+            decoded = base64.b64decode(creds_b64).decode("utf-8")
+            creds_dict = json.loads(decoded)
+        except Exception as e:
+            raise ValueError(f"GOOGLE_CREDENTIALS_BASE64 解碼失敗：{e}")
+    elif creds_json:
+        try:
+            creds_dict = json.loads(creds_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"GOOGLE_CREDENTIALS_JSON 解析失敗（{e}）— 建議改用 GOOGLE_CREDENTIALS_BASE64"
+            )
+    else:
+        raise ValueError("請設定 GOOGLE_CREDENTIALS_BASE64 或 GOOGLE_CREDENTIALS_JSON")
+
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
 
