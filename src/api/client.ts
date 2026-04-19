@@ -105,11 +105,38 @@ export function clearToken() {
 }
 
 // ── Core fetch helper ──────────────────────────────────────────────────────────
+// Short TTL cache for GETs (and in-flight dedup) to mitigate Google Sheets API
+// rate limits when the user clicks rapidly between tabs.
+const GET_CACHE_TTL_MS = 8000;
+const getCache = new Map<string, { ts: number; data: unknown }>();
+const inflight = new Map<string, Promise<unknown>>();
+
+export function clearGetCache(pathPrefix?: string) {
+  if (!pathPrefix) {
+    getCache.clear();
+    return;
+  }
+  for (const key of Array.from(getCache.keys())) {
+    if (key.startsWith(pathPrefix)) getCache.delete(key);
+  }
+}
 
 async function apiFetch<T = unknown>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const method = (options.method ?? "GET").toUpperCase();
+  const cacheable = method === "GET";
+
+  if (cacheable) {
+    const hit = getCache.get(path);
+    if (hit && Date.now() - hit.ts < GET_CACHE_TTL_MS) {
+      return hit.data as T;
+    }
+    const pending = inflight.get(path);
+    if (pending) return pending as Promise<T>;
+  }
+
   const token = getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -119,15 +146,35 @@ async function apiFetch<T = unknown>(
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  const res = await fetch(`${BASE}${path}`, { ...options, headers });
-  const data = await res.json();
+  const request = (async () => {
+    const res = await fetch(`${BASE}${path}`, { ...options, headers });
+    const data = await res.json();
 
-  if (!res.ok) {
-    const err = new Error(data.error ?? "發生未知錯誤") as Error & { code?: string };
-    err.code = data.code;
-    throw err;
+    if (!res.ok) {
+      const err = new Error(data.error ?? "發生未知錯誤") as Error & { code?: string };
+      err.code = data.code;
+      throw err;
+    }
+    return data as T;
+  })();
+
+  if (cacheable) {
+    inflight.set(path, request);
+    try {
+      const data = await request;
+      getCache.set(path, { ts: Date.now(), data });
+      return data;
+    } finally {
+      inflight.delete(path);
+    }
   }
-  return data as T;
+
+  // Non-GET: invalidate any cached path that could be affected.
+  try {
+    return await request;
+  } finally {
+    clearGetCache("/api/");
+  }
 }
 
 // ── API surface ────────────────────────────────────────────────────────────────

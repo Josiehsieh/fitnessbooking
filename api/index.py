@@ -26,6 +26,19 @@ app.json.allow_nan = False  # type: ignore[attr-defined]
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 
+@app.errorhandler(Exception)
+def _handle_uncaught(err):
+    """Friendly error messages for common upstream failures (e.g. Sheets quota)."""
+    msg = str(err)
+    if "429" in msg or "Quota exceeded" in msg or "RATE_LIMIT" in msg:
+        return jsonify({
+            "error": "系統忙碌中，請稍等幾秒再試一次。",
+            "detail": "Google Sheets API rate limit reached.",
+            "code": "RATE_LIMIT",
+        }), 429
+    return jsonify({"error": msg}), 500
+
+
 def _safe(value):
     """將 float('inf')/nan/None 轉成可安全序列化的 JSON 值。"""
     if isinstance(value, float):
@@ -93,25 +106,44 @@ def _hash(password: str) -> str:
 
 import time as _time
 
+# Cache entries: { sheet_name: (timestamp, data) }
+# TTL is intentionally long (15 s) because:
+#  - Google Sheets free quota = 60 reads/min/user; admin browsing easily hits this
+#  - Stale data is acceptable; writes invalidate the cache so real changes show up
 _sheet_cache: dict = {}
-_SHEET_TTL = 3.0
+_SHEET_TTL = 15.0
 
 
 def _cached_records(sheet_name: str):
-    """Get all records from a worksheet with short TTL cache."""
+    """Get all records from a worksheet with TTL cache.
+
+    On quota-exceeded (429) errors we serve the previously cached data even if
+    it is stale, so the UI keeps working instead of breaking on a hot quota.
+    """
     now = _time.time()
     hit = _sheet_cache.get(sheet_name)
     if hit and now - hit[0] < _SHEET_TTL:
         return hit[1]
-    if sheet_name == "Orders":
-        ws = _ensure_orders_sheet()
-    elif sheet_name == "Settings":
-        ws = _ensure_settings_sheet()
-    else:
-        ws = _ws(sheet_name)
-    data = ws.get_all_records()
-    _sheet_cache[sheet_name] = (now, data)
-    return data
+    try:
+        if sheet_name == "Orders":
+            ws = _ensure_orders_sheet()
+        elif sheet_name == "Settings":
+            ws = _ensure_settings_sheet()
+        else:
+            ws = _ws(sheet_name)
+        data = ws.get_all_records()
+        _sheet_cache[sheet_name] = (now, data)
+        return data
+    except Exception as e:
+        # On rate-limit, fall back to last known data (even if expired).
+        # Better to show slightly stale data than to fail the whole request.
+        msg = str(e)
+        is_rate_limited = "429" in msg or "Quota exceeded" in msg or "RATE_LIMIT" in msg
+        if is_rate_limited and hit:
+            # Refresh timestamp so we don't hammer the API for the next 5 s
+            _sheet_cache[sheet_name] = (now - _SHEET_TTL + 5.0, hit[1])
+            return hit[1]
+        raise
 
 
 def _invalidate_cache(*sheet_names: str):

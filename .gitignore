@@ -22,6 +22,8 @@ service_account.json
 !tsconfig.json
 !metadata.json
 !vercel.json
+*.base64
+.google-creds*
 
 # Local startup scripts (contain Spreadsheet ID)
 start_backend.ps1
