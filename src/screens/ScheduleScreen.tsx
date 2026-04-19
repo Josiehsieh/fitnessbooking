@@ -35,6 +35,48 @@ function spotsInfo(cls: ClassItem): { label: string; type: 'full' | 'urgent' | '
   return { label: `剩餘 ${remaining} 個名額`, type: 'normal' };
 }
 
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+function toISODate(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function buildCalendarGrid(year: number, month: number): Array<{
+  day: number;
+  iso: string;
+  inMonth: boolean;
+}> {
+  // month is 0-indexed (0 = January). Grid starts from Monday.
+  const first = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  // JS: Sunday=0 .. Saturday=6 → convert to Monday=0 .. Sunday=6
+  const firstWeekday = (first.getDay() + 6) % 7;
+
+  const cells: Array<{ day: number; iso: string; inMonth: boolean }> = [];
+
+  // Leading days from previous month
+  const prevLastDay = new Date(year, month, 0).getDate();
+  for (let i = firstWeekday - 1; i >= 0; i--) {
+    const day = prevLastDay - i;
+    const d = new Date(year, month - 1, day);
+    cells.push({ day, iso: toISODate(d), inMonth: false });
+  }
+  // Current month
+  for (let d = 1; d <= lastDay; d++) {
+    const date = new Date(year, month, d);
+    cells.push({ day: d, iso: toISODate(date), inMonth: true });
+  }
+  // Trailing days to fill last week
+  while (cells.length % 7 !== 0) {
+    const d = cells.length - firstWeekday - lastDay + 1;
+    const date = new Date(year, month + 1, d);
+    cells.push({ day: d, iso: toISODate(date), inMonth: false });
+  }
+  return cells;
+}
+
 export default function ScheduleScreen({
   onNavigate,
   onBookClass,
@@ -47,6 +89,11 @@ export default function ScheduleScreen({
   const [bookingId, setBookingId] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<{ name: string; time: string; day: string } | null>(null);
   const [bookError, setBookError] = useState('');
+
+  const now = new Date();
+  const todayISO = toISODate(now);
+  const [calYear, setCalYear] = useState(now.getFullYear());
+  const [calMonth, setCalMonth] = useState(now.getMonth());
 
   useEffect(() => {
     api.classes.list()
@@ -165,12 +212,30 @@ export default function ScheduleScreen({
         {/* Calendar Section */}
         <section className="lg:col-span-4 bg-surface-container-low p-8 rounded-3xl sticky top-28">
           <div className="flex justify-between items-center mb-8">
-            <h2 className="text-xl font-bold text-on-surface">2024年 9月</h2>
+            <h2 className="text-xl font-bold text-on-surface">
+              {calYear}年 {calMonth + 1}月
+            </h2>
             <div className="flex gap-2">
-              <button className="w-10 h-10 flex items-center justify-center rounded-full bg-surface-container-lowest text-primary hover:bg-primary-container transition-colors">
+              <button
+                onClick={() => {
+                  const d = new Date(calYear, calMonth - 1, 1);
+                  setCalYear(d.getFullYear());
+                  setCalMonth(d.getMonth());
+                }}
+                className="w-10 h-10 flex items-center justify-center rounded-full bg-surface-container-lowest text-primary hover:bg-primary-container transition-colors"
+                aria-label="上個月"
+              >
                 <ChevronLeft className="w-5 h-5" />
               </button>
-              <button className="w-10 h-10 flex items-center justify-center rounded-full bg-surface-container-lowest text-primary hover:bg-primary-container transition-colors">
+              <button
+                onClick={() => {
+                  const d = new Date(calYear, calMonth + 1, 1);
+                  setCalYear(d.getFullYear());
+                  setCalMonth(d.getMonth());
+                }}
+                className="w-10 h-10 flex items-center justify-center rounded-full bg-surface-container-lowest text-primary hover:bg-primary-container transition-colors"
+                aria-label="下個月"
+              >
                 <ChevronRight className="w-5 h-5" />
               </button>
             </div>
@@ -178,27 +243,48 @@ export default function ScheduleScreen({
 
           <div className="grid grid-cols-7 gap-y-4 text-center mb-6">
             {['一', '二', '三', '四', '五', '六', '日'].map((day) => (
-              <div key={day} className="text-[0.75rem] font-medium text-on-surface-variant/50 uppercase tracking-widest">
+              <div
+                key={day}
+                className="text-[0.75rem] font-medium text-on-surface-variant/50 uppercase tracking-widest"
+              >
                 {day}
               </div>
             ))}
-            {[26, 27, 28, 29, 30, 31].map((day) => (
-              <div key={`prev-${day}`} className="py-2 text-surface-variant">{day}</div>
-            ))}
-            {[1, 2, 3].map((day) => (
-              <div key={day} className="py-2 font-medium">{day}</div>
-            ))}
-            <div className="py-2 font-medium relative">
-              4
-              <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-tertiary rounded-full"></span>
-            </div>
-            {[5, 6, 7, 8].map((day) => (
-              <div key={day} className="py-2 font-medium">{day}</div>
-            ))}
-            <div className="py-2 bg-primary-container text-on-primary-container rounded-full font-bold">9</div>
-            {[10, 11, 12, 13, 14, 15].map((day) => (
-              <div key={day} className="py-2 font-medium">{day}</div>
-            ))}
+            {buildCalendarGrid(calYear, calMonth).map((cell) => {
+              const hasClasses = schedules.some((s) => s.date === cell.iso);
+              const isToday = cell.iso === todayISO;
+              if (!cell.inMonth) {
+                return (
+                  <div
+                    key={cell.iso}
+                    className="py-2 text-surface-variant/50"
+                  >
+                    {cell.day}
+                  </div>
+                );
+              }
+              if (isToday) {
+                return (
+                  <div
+                    key={cell.iso}
+                    className="py-2 bg-primary-container text-on-primary-container rounded-full font-bold relative"
+                  >
+                    {cell.day}
+                    {hasClasses && (
+                      <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-on-primary-container rounded-full"></span>
+                    )}
+                  </div>
+                );
+              }
+              return (
+                <div key={cell.iso} className="py-2 font-medium relative">
+                  {cell.day}
+                  {hasClasses && (
+                    <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-tertiary rounded-full"></span>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           <div className="mt-8 p-5 bg-tertiary/10 rounded-2xl border border-tertiary/10">
