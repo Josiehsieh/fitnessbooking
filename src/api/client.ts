@@ -7,6 +7,49 @@ export interface User {
   email: string;
   name: string;
   credits: number;
+  credits_expire_at?: string;
+  has_password?: boolean;
+  has_real_email?: boolean;
+  line_linked?: boolean;
+  notify_email?: boolean;
+  notify_line?: boolean;
+}
+
+export interface NotificationPrefs {
+  notify_email: boolean;
+  notify_line: boolean;
+  line_linked: boolean;
+  has_real_email: boolean;
+  server_channels: { email: boolean; line: boolean };
+}
+
+export interface Order {
+  order_id: string;
+  user_id: string;
+  user_email: string;
+  user_name: string;
+  quantity: number;
+  subtotal: number;
+  discount: number;
+  total: number;
+  coupon_code: string;
+  status: "pending" | "paid" | "cancelled";
+  created_at: string;
+  paid_at?: string;
+  notes?: string;
+}
+
+export interface PaymentInfo {
+  bank_name: string;
+  bank_account: string;
+  bank_holder: string;
+  line_assistant_id: string;
+  payment_note: string;
+}
+
+export interface OrderCreateResponse {
+  order: Order;
+  payment_info: PaymentInfo;
 }
 
 export interface ClassItem {
@@ -104,6 +147,25 @@ export const api = {
       }),
 
     getMe: () => apiFetch<{ user: User }>("/api/user/me"),
+
+    updateMe: (payload: {
+      name?: string;
+      current_password?: string;
+      new_password?: string;
+    }) =>
+      apiFetch<{ user: User; message: string }>("/api/user/me", {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      }),
+
+    getNotifications: () =>
+      apiFetch<NotificationPrefs>("/api/user/notifications"),
+
+    updateNotifications: (payload: { notify_email?: boolean; notify_line?: boolean }) =>
+      apiFetch<{ message: string; notify_email: boolean; notify_line: boolean }>(
+        "/api/user/notifications",
+        { method: "PATCH", body: JSON.stringify(payload) }
+      ),
   },
 
   classes: {
@@ -126,17 +188,149 @@ export const api = {
   },
 
   packages: {
-    list: () => apiFetch<{ packages: Package[] }>("/api/packages"),
-
-    purchase: (quantity: number) =>
-      apiFetch<{ message: string; credits: number; pricing: { subtotal: number; discount: number; total: number } }>(
-        "/api/packages/purchase",
-        { method: "POST", body: JSON.stringify({ quantity }) }
-      ),
-
     pricing: () =>
       apiFetch<{ price_per_class: number; bulk_discount_min: number; bulk_discount_amount: number }>(
         "/api/packages/pricing"
       ),
+  },
+
+  orders: {
+    create: (quantity: number, couponCode?: string) =>
+      apiFetch<OrderCreateResponse>("/api/orders", {
+        method: "POST",
+        body: JSON.stringify({ quantity, coupon_code: couponCode ?? "" }),
+      }),
+
+    listMine: () => apiFetch<{ orders: Order[] }>("/api/orders/mine"),
+  },
+
+  settings: {
+    get: () => apiFetch<PaymentInfo>("/api/settings"),
+  },
+
+  admin: {
+    check: () => apiFetch<{ is_admin: boolean }>("/api/admin/check"),
+
+    stats: () =>
+      apiFetch<{
+        total_users: number;
+        total_classes: number;
+        total_bookings: number;
+        confirmed_bookings: number;
+        cancelled_bookings: number;
+        estimated_revenue: number;
+        actual_revenue: number;
+        pending_revenue: number;
+        pending_orders: number;
+        paid_orders: number;
+        total_spots: number;
+        booked_spots: number;
+        occupancy_rate: number;
+        total_credits_held: number;
+      }>("/api/admin/stats"),
+
+    listUsers: () =>
+      apiFetch<{
+        users: Array<{
+          user_id: string;
+          email: string;
+          name: string;
+          credits: number;
+          credits_expire_at?: string;
+          expired?: boolean;
+          created_at: string;
+        }>;
+        total: number;
+      }>("/api/admin/users"),
+
+    updateCredits: (userId: string, credits: number) =>
+      apiFetch<{ message: string; credits: number; credits_expire_at: string }>(
+        `/api/admin/users/${userId}/credits`,
+        { method: "PATCH", body: JSON.stringify({ credits }) }
+      ),
+
+    updateUserExpiry: (userId: string, creditsExpireAt: string) =>
+      apiFetch<{ message: string; credits: number; credits_expire_at: string }>(
+        `/api/admin/users/${userId}/credits`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ credits_expire_at: creditsExpireAt }),
+        }
+      ),
+
+    createClass: (payload: {
+      date: string;
+      time: string;
+      name: string;
+      duration?: number;
+      price?: number;
+      total_spots?: number;
+    }) =>
+      apiFetch<{ message: string; class_id: string }>("/api/admin/classes", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+
+    deleteClass: (classId: string) =>
+      apiFetch<{ message: string }>(`/api/admin/classes/${classId}`, {
+        method: "DELETE",
+      }),
+
+    listBookings: () =>
+      apiFetch<{
+        bookings: Array<{
+          booking_id: string;
+          user_id: string;
+          user_email: string;
+          user_name: string;
+          class_id: string;
+          class_name: string;
+          class_datetime: string;
+          status: string;
+          created_at: string;
+        }>;
+        total: number;
+      }>("/api/admin/bookings"),
+
+    listOrders: () =>
+      apiFetch<{ orders: Order[]; total: number }>("/api/admin/orders"),
+
+    confirmOrder: (orderId: string) =>
+      apiFetch<{ message: string; credits: number; credits_expire_at: string }>(
+        `/api/admin/orders/${orderId}/confirm`,
+        { method: "POST" }
+      ),
+
+    cancelOrder: (orderId: string, reason?: string) =>
+      apiFetch<{ message: string }>(`/api/admin/orders/${orderId}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ reason: reason ?? "" }),
+      }),
+
+    getSettings: () =>
+      apiFetch<{ settings: Record<string, string> }>("/api/admin/settings"),
+
+    updateSettings: (settings: Record<string, string>) =>
+      apiFetch<{ message: string; settings: Record<string, string> }>(
+        "/api/admin/settings",
+        { method: "PATCH", body: JSON.stringify(settings) }
+      ),
+
+    notifyStatus: () =>
+      apiFetch<{ email: boolean; line: boolean; gmail_user: string; from_name: string }>(
+        "/api/admin/notify/status"
+      ),
+
+    testEmail: (to?: string) =>
+      apiFetch<{ message: string; detail: string }>("/api/admin/notify/test_email", {
+        method: "POST",
+        body: JSON.stringify({ to: to ?? "" }),
+      }),
+
+    testLine: (lineUserId?: string) =>
+      apiFetch<{ message: string; detail: string }>("/api/admin/notify/test_line", {
+        method: "POST",
+        body: JSON.stringify({ line_user_id: lineUserId ?? "" }),
+      }),
   },
 };

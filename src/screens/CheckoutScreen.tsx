@@ -1,25 +1,28 @@
 import { useState } from 'react';
 import { motion } from 'motion/react';
-import { Bell, Mail, MessageCircle, Lock, Loader2, CheckCircle2, Minus, Plus, Tag } from 'lucide-react';
+import { Loader2, CheckCircle2, Minus, Plus, Tag, AlertCircle } from 'lucide-react';
 import { Screen } from '../App';
-import { api, ClassItem, User, BookingResult } from '../api/client';
+import { api, ClassItem, User, BookingResult, Order, PaymentInfo } from '../api/client';
 
 interface CheckoutScreenProps {
   onNavigate: (screen: Screen) => void;
   selectedClass: ClassItem | null;
   user: User | null;
   onBookingComplete: (result: BookingResult, credits: number) => void;
-  onUpdateCredits: (credits: number) => void;
+  onOrderCreated: (order: Order, paymentInfo: PaymentInfo) => void;
 }
 
 const PRICE_PER_CLASS = 150;
 const BULK_MIN = 4;
 const BULK_DISCOUNT = 20;
+const COUPON_DISCOUNT = 20;
 
-function calcPrice(qty: number) {
+function calcPrice(qty: number, couponApplied: boolean) {
   const subtotal = qty * PRICE_PER_CLASS;
-  const discount = qty >= BULK_MIN ? BULK_DISCOUNT : 0;
-  return { subtotal, discount, total: subtotal - discount };
+  const bulkDiscount = qty >= BULK_MIN ? BULK_DISCOUNT : 0;
+  const couponDiscount = couponApplied ? COUPON_DISCOUNT : 0;
+  const discount = bulkDiscount + couponDiscount;
+  return { subtotal, bulkDiscount, couponDiscount, discount, total: Math.max(0, subtotal - discount) };
 }
 
 export default function CheckoutScreen({
@@ -27,53 +30,64 @@ export default function CheckoutScreen({
   selectedClass,
   user,
   onBookingComplete,
-  onUpdateCredits,
+  onOrderCreated,
 }: CheckoutScreenProps) {
   const [quantity, setQuantity] = useState(1);
+  const [couponInput, setCouponInput] = useState('');
+  const [couponApplied, setCouponApplied] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const hasCredits = (user?.credits ?? 0) >= 1;
-  const pricing = calcPrice(quantity);
+  const canBookWithCredits = Boolean(selectedClass) && hasCredits;
+  const pricing = calcPrice(quantity, Boolean(couponApplied));
 
   const changeQty = (delta: number) => {
     setQuantity((q) => Math.max(1, Math.min(50, q + delta)));
   };
 
-  // Case A: User has credits → just book the class (no purchase needed)
-  // Case B: User has no credits → buy credits then book
-  // Case C: No selected class → purchase only mode
+  const applyCoupon = () => {
+    const code = couponInput.trim().toUpperCase();
+    if (!code) return;
+    // Phase 1: simple client-side hint. Backend is the source of truth.
+    if (code === 'NEW20') {
+      setCouponApplied(code);
+      setError('');
+    } else {
+      setError('折扣碼無效');
+    }
+  };
 
-  const handleConfirm = async () => {
-    if (!user) { onNavigate('login'); return; }
-    if (!selectedClass) { setError('未選擇課程，請返回課程列表'); return; }
+  const removeCoupon = () => {
+    setCouponApplied('');
+    setCouponInput('');
+  };
 
+  // 有堂數 + 選了課 → 直接預約（扣 1 堂）
+  const handleBookWithCredits = async () => {
+    if (!user || !selectedClass) return;
     setLoading(true);
     setError('');
     try {
-      if (!hasCredits) {
-        const pkgRes = await api.packages.purchase(quantity);
-        onUpdateCredits(pkgRes.credits);
-      }
-      const bookRes = await api.bookings.create(selectedClass.class_id);
-      onBookingComplete(bookRes.booking, bookRes.credits_remaining);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '發生錯誤，請再試一次');
+      const res = await api.bookings.create(selectedClass.class_id);
+      onBookingComplete(res.booking, res.credits_remaining);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '預約失敗，請再試一次');
     } finally {
       setLoading(false);
     }
   };
 
-  const handlePurchaseOnly = async () => {
+  // 購買堂數 → 建立 pending 訂單 → 導到付款頁
+  const handleCreateOrder = async () => {
     if (!user) { onNavigate('login'); return; }
     setLoading(true);
     setError('');
     try {
-      const res = await api.packages.purchase(quantity);
-      onUpdateCredits(res.credits);
-      alert(`✅ 成功購買 ${quantity} 堂！目前剩餘：${res.credits} 堂\n實付：NT$${res.pricing.total}`);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '購買失敗，請再試一次');
+      const res = await api.orders.create(quantity, couponApplied || undefined);
+      onOrderCreated(res.order, res.payment_info);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '建立訂單失敗，請再試一次');
     } finally {
       setLoading(false);
     }
@@ -95,7 +109,9 @@ export default function CheckoutScreen({
               完成您的訂單
             </h1>
             <p className="text-on-surface-variant text-lg font-medium">
-              在空間中保留您的位置。請確認下方的律動細節。
+              {canBookWithCredits
+                ? '您的堂數充足，直接完成預約即可'
+                : '購買堂數，完成匯款後即可預約課程（堂數有效期至本月月底）'}
             </p>
           </div>
 
@@ -104,7 +120,7 @@ export default function CheckoutScreen({
             <section className="space-y-4">
               <h2 className="text-xl font-bold text-primary flex items-center gap-3">
                 <CheckCircle2 className="w-6 h-6" />
-                預約的課程
+                選擇的課程
               </h2>
               <div className="bg-surface-container-lowest rounded-3xl p-6 md:p-8 border border-outline-variant/10 shadow-sm">
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -114,25 +130,34 @@ export default function CheckoutScreen({
                       {selectedClass.day_label} · {selectedClass.time} · {selectedClass.duration} 分鐘
                     </p>
                   </div>
-                  <span className="text-2xl font-bold text-primary">NT${PRICE_PER_CLASS}</span>
+                  <span className="text-2xl font-bold text-primary">1 堂</span>
                 </div>
               </div>
             </section>
           )}
 
-          {/* Credits status */}
-          {selectedClass && hasCredits && (
+          {/* Has credits → just show summary */}
+          {canBookWithCredits && (
             <div className="bg-secondary-container/30 rounded-2xl p-5 flex items-center gap-4">
               <CheckCircle2 className="w-6 h-6 text-secondary shrink-0" />
-              <div>
-                <p className="font-bold text-on-surface">您有 {user?.credits} 堂可用</p>
-                <p className="text-sm text-on-surface-variant">系統將扣除 1 堂後完成預約，無需額外付款</p>
+              <div className="flex-1">
+                <p className="font-bold text-on-surface">
+                  您有 {user?.credits} 堂可用
+                  {user?.credits_expire_at && (
+                    <span className="text-sm font-normal text-on-surface-variant ml-2">
+                      （有效期至 {user.credits_expire_at}）
+                    </span>
+                  )}
+                </p>
+                <p className="text-sm text-on-surface-variant">
+                  系統將扣除 1 堂後完成預約，無需額外付款
+                </p>
               </div>
             </div>
           )}
 
-          {/* Quantity selector (shown when buying credits) */}
-          {(!hasCredits || !selectedClass) && (
+          {/* Buy credits flow – shown whenever the user is NOT just booking with existing credits */}
+          {!canBookWithCredits && (
             <section className="space-y-6">
               <div>
                 <h2 className="text-xl font-bold text-on-surface mb-1">選擇購買堂數</h2>
@@ -166,7 +191,6 @@ export default function CheckoutScreen({
                   </button>
                 </div>
 
-                {/* Quick presets */}
                 <div className="flex gap-2 mt-8 flex-wrap">
                   {[1, 4, 8, 10, 20].map((n) => (
                     <button
@@ -183,12 +207,11 @@ export default function CheckoutScreen({
                   ))}
                 </div>
 
-                {/* Discount notice */}
                 {quantity >= BULK_MIN ? (
                   <div className="mt-6 flex items-center gap-3 bg-secondary-container/40 rounded-2xl px-5 py-3">
                     <Tag className="w-4 h-4 text-secondary shrink-0" />
                     <p className="text-sm font-bold text-on-secondary-container">
-                      已達 {BULK_MIN} 堂折扣！省下 NT${BULK_DISCOUNT} 🎉
+                      已達 {BULK_MIN} 堂折扣！省下 NT${BULK_DISCOUNT}
                     </p>
                   </div>
                 ) : (
@@ -200,47 +223,45 @@ export default function CheckoutScreen({
                   </div>
                 )}
               </div>
+
+              {/* Coupon code */}
+              <div className="bg-surface-container-lowest rounded-3xl p-6 border border-outline-variant/10">
+                <h3 className="text-sm font-bold text-on-surface mb-3">折扣碼</h3>
+                {couponApplied ? (
+                  <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-green-50 border border-green-200">
+                    <div className="flex items-center gap-2 text-green-700">
+                      <Tag className="w-4 h-4" />
+                      <span className="font-bold">{couponApplied}</span>
+                      <span className="text-sm">已套用 -NT${COUPON_DISCOUNT}</span>
+                    </div>
+                    <button
+                      onClick={removeCoupon}
+                      className="text-xs text-green-700 hover:text-green-800 underline"
+                    >
+                      移除
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={couponInput}
+                      onChange={(e) => setCouponInput(e.target.value)}
+                      placeholder="輸入折扣碼（例：NEW20）"
+                      className="flex-1 px-4 py-2.5 rounded-xl bg-surface-container-low border-none outline-none focus:ring-2 focus:ring-primary/20 text-sm"
+                    />
+                    <button
+                      onClick={applyCoupon}
+                      disabled={!couponInput.trim()}
+                      className="px-5 py-2.5 rounded-xl bg-primary text-on-primary text-sm font-semibold disabled:opacity-50"
+                    >
+                      套用
+                    </button>
+                  </div>
+                )}
+              </div>
             </section>
           )}
-
-          {/* Notification preference */}
-          <section className="space-y-6">
-            <h2 className="text-xl font-bold text-primary flex items-center gap-3">
-              <Bell className="w-6 h-6" />
-              通知方式
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <label className="relative flex items-center p-6 bg-surface-container-lowest border border-primary/20 rounded-2xl cursor-pointer shadow-sm">
-                <input type="radio" name="notify" className="hidden" defaultChecked />
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-full bg-primary-container/30 flex items-center justify-center text-primary">
-                    <Mail className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <span className="block font-bold text-on-surface">電子郵件</span>
-                    <span className="text-sm text-on-surface-variant font-medium">{user?.email ?? 'hello@example.com'}</span>
-                  </div>
-                </div>
-                <div className="absolute right-6 top-1/2 -translate-y-1/2 w-6 h-6 border-2 border-primary rounded-full flex items-center justify-center">
-                  <div className="w-2.5 h-2.5 bg-primary rounded-full"></div>
-                </div>
-              </label>
-
-              <label className="relative flex items-center p-6 bg-surface-container-low border border-transparent rounded-2xl cursor-pointer hover:bg-surface-container-lowest">
-                <input type="radio" name="notify" className="hidden" />
-                <div className="flex items-center gap-4 text-on-surface-variant">
-                  <div className="w-12 h-12 rounded-full bg-surface-container flex items-center justify-center">
-                    <MessageCircle className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <span className="block font-bold text-on-surface">LINE 官方帳號</span>
-                    <span className="text-sm font-medium">@josieubound</span>
-                  </div>
-                </div>
-                <div className="absolute right-6 top-1/2 -translate-y-1/2 w-6 h-6 border-2 border-outline-variant rounded-full"></div>
-              </label>
-            </div>
-          </section>
         </div>
 
         {/* ── Right Column: Order Summary ── */}
@@ -249,16 +270,15 @@ export default function CheckoutScreen({
             <h3 className="text-2xl font-bold">訂單摘要</h3>
 
             <div className="space-y-4 font-medium">
-              {/* Line items */}
-              {selectedClass && hasCredits ? (
+              {canBookWithCredits ? (
                 <>
                   <div className="flex justify-between items-center text-on-surface">
                     <span>{selectedClass.name}</span>
-                    <span>NT${PRICE_PER_CLASS}</span>
+                    <span>1 堂</span>
                   </div>
                   <div className="flex justify-between items-center text-secondary">
                     <span>使用已有堂數扣抵</span>
-                    <span className="font-bold">-NT${PRICE_PER_CLASS}</span>
+                    <span className="font-bold">-1 堂</span>
                   </div>
                 </>
               ) : (
@@ -267,13 +287,22 @@ export default function CheckoutScreen({
                     <span>{quantity} 堂 × NT${PRICE_PER_CLASS}</span>
                     <span>NT${pricing.subtotal}</span>
                   </div>
-                  {pricing.discount > 0 && (
+                  {pricing.bulkDiscount > 0 && (
                     <div className="flex justify-between items-center text-secondary">
                       <span className="flex items-center gap-2">
                         <Tag className="w-4 h-4" />
-                        4 堂以上折扣
+                        {BULK_MIN} 堂以上折扣
                       </span>
-                      <span className="font-bold">-NT${pricing.discount}</span>
+                      <span className="font-bold">-NT${pricing.bulkDiscount}</span>
+                    </div>
+                  )}
+                  {pricing.couponDiscount > 0 && (
+                    <div className="flex justify-between items-center text-secondary">
+                      <span className="flex items-center gap-2">
+                        <Tag className="w-4 h-4" />
+                        折扣碼 {couponApplied}
+                      </span>
+                      <span className="font-bold">-NT${pricing.couponDiscount}</span>
                     </div>
                   )}
                 </>
@@ -282,58 +311,49 @@ export default function CheckoutScreen({
               <div className="h-px bg-outline-variant/20"></div>
 
               <div className="flex justify-between items-center text-xl font-bold">
-                <span>總計</span>
+                <span>應付金額</span>
                 <span className="text-primary text-2xl">
-                  {selectedClass && hasCredits ? 'NT$0' : `NT$${pricing.total}`}
+                  {canBookWithCredits ? 'NT$0' : `NT$${pricing.total}`}
                 </span>
               </div>
 
-              {selectedClass && hasCredits && (
-                <p className="text-xs text-on-surface-variant text-right">（課堂費用以堂數扣抵）</p>
+              {canBookWithCredits && (
+                <p className="text-xs text-on-surface-variant text-right">（以堂數扣抵，無需付款）</p>
               )}
             </div>
 
             {error && (
-              <p className="text-sm text-error bg-error/5 rounded-2xl py-3 px-4 text-center">{error}</p>
+              <div className="flex gap-2 items-start text-sm text-error bg-error/5 rounded-2xl py-3 px-4">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <p>{error}</p>
+              </div>
             )}
 
-            {selectedClass ? (
+            {canBookWithCredits ? (
               <button
-                onClick={handleConfirm}
+                onClick={handleBookWithCredits}
                 disabled={loading}
                 className="w-full bg-gradient-to-br from-primary to-primary-dim text-on-primary py-5 rounded-full font-bold text-lg shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {loading && <Loader2 className="w-5 h-5 animate-spin" />}
-                {hasCredits ? '確認預約（扣 1 堂）' : `付款 NT$${pricing.total} 並預約`}
+                確認預約（扣 1 堂）
               </button>
             ) : (
               <button
-                onClick={handlePurchaseOnly}
+                onClick={handleCreateOrder}
                 disabled={loading}
                 className="w-full bg-gradient-to-br from-primary to-primary-dim text-on-primary py-5 rounded-full font-bold text-lg shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {loading && <Loader2 className="w-5 h-5 animate-spin" />}
-                購買 {quantity} 堂・NT${pricing.total}
+                送出訂單・NT${pricing.total}
               </button>
             )}
 
-            <div className="flex items-center justify-center gap-4 text-on-surface-variant text-xs font-medium">
-              <div className="flex items-center gap-1.5">
-                <Lock className="w-3.5 h-3.5" />
-                安全支付
-              </div>
-              <div className="w-1 h-1 rounded-full bg-outline-variant"></div>
-              <span>隨時取消</span>
-            </div>
-
-            <div className="rounded-2xl overflow-hidden h-40 relative">
-              <img
-                src="https://images.unsplash.com/photo-1518611012118-696072aa579a?auto=format&fit=crop&q=80&w=800"
-                alt="Studio"
-                className="w-full h-full object-cover opacity-80 mix-blend-multiply"
-              />
-              <div className="absolute inset-0 bg-primary/10 mix-blend-overlay"></div>
-            </div>
+            <p className="text-xs text-on-surface-variant text-center leading-relaxed">
+              {canBookWithCredits
+                ? '⏰ 取消政策：課程開始前 6 小時可自行取消並退回堂數'
+                : '💳 送出訂單後將顯示匯款資訊，管理員確認入帳後自動加入堂數'}
+            </p>
           </div>
         </aside>
       </div>

@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { Heart, Shield, Activity, Flame, Smile, ArrowRight, Upload } from 'lucide-react';
+import { Heart, Shield, Activity, Flame, Smile, ArrowRight } from 'lucide-react';
 
 interface UboundInfoScreenProps {
   onNavigate: (screen: string) => void;
@@ -24,27 +24,13 @@ export default function UboundInfoScreen({ onNavigate }: UboundInfoScreenProps) 
         </p>
       </header>
 
-      {/* Uploaded PNG Image Section */}
+      {/* Course Image Section */}
       <section className="mb-24 max-w-4xl mx-auto">
-        <div className="bg-surface-container-lowest rounded-[2.5rem] p-2 md:p-4 shadow-xl shadow-primary/5 border border-outline-variant/10 relative overflow-hidden group">
-          {/* Fallback/Instruction if image is missing */}
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-surface-container-low text-on-surface-variant -z-10">
-            <Upload className="w-12 h-12 mb-4 opacity-50" />
-            <p className="font-medium">請將您的圖片上傳至 public 資料夾並命名為 ubound-info.png</p>
-          </div>
-          
-          {/* The actual image tag for the uploaded PNG */}
-          <img 
-            src="/ubound-info.png" 
-            alt="UBOUND 課程介紹" 
-            className="w-full h-auto rounded-[2rem] relative z-10 bg-surface-container-lowest min-h-[300px] object-contain"
-            onError={(e) => {
-              // Hide broken image icon if file not found yet, revealing the fallback behind it
-              (e.target as HTMLImageElement).style.opacity = '0';
-            }}
-            onLoad={(e) => {
-              (e.target as HTMLImageElement).style.opacity = '1';
-            }}
+        <div className="bg-surface-container-lowest rounded-[2.5rem] p-2 md:p-4 shadow-xl shadow-primary/5 border border-outline-variant/10 overflow-hidden">
+          <img
+            src="/ubound-info.png"
+            alt="UBOUND 彈跳床課程"
+            className="w-full h-auto rounded-[2rem] object-cover"
           />
         </div>
       </section>

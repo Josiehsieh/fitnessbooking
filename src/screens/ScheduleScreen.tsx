@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
-import { motion } from 'motion/react';
-import { ChevronLeft, ChevronRight, Info, CreditCard, UserCheck, AlertCircle, Loader2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { ChevronLeft, ChevronRight, Info, CreditCard, UserCheck, AlertCircle, Loader2, CheckCircle2, X } from 'lucide-react';
 import { Screen } from '../App';
 import { api, ClassItem, User } from '../api/client';
 
 interface ScheduleScreenProps {
   onNavigate: (screen: Screen) => void;
   onBookClass: (cls: ClassItem) => void;
+  onCreditsChanged: (credits: number) => void;
   user: User | null;
 }
 
@@ -34,11 +35,18 @@ function spotsInfo(cls: ClassItem): { label: string; type: 'full' | 'urgent' | '
   return { label: `剩餘 ${remaining} 個名額`, type: 'normal' };
 }
 
-export default function ScheduleScreen({ onNavigate, onBookClass, user }: ScheduleScreenProps) {
+export default function ScheduleScreen({
+  onNavigate,
+  onBookClass,
+  onCreditsChanged,
+  user,
+}: ScheduleScreenProps) {
   const [schedules, setSchedules] = useState<DaySchedule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [bookingId, setBookingId] = useState<string | null>(null);
+  const [successToast, setSuccessToast] = useState<{ name: string; time: string; day: string } | null>(null);
+  const [bookError, setBookError] = useState('');
 
   useEffect(() => {
     api.classes.list()
@@ -47,9 +55,47 @@ export default function ScheduleScreen({ onNavigate, onBookClass, user }: Schedu
       .finally(() => setLoading(false));
   }, []);
 
-  const handleBook = (cls: ClassItem) => {
+  useEffect(() => {
+    if (!successToast) return;
+    const t = setTimeout(() => setSuccessToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [successToast]);
+
+  const handleBook = async (cls: ClassItem) => {
+    setBookError('');
+
+    if (!user) {
+      onBookClass(cls);
+      return;
+    }
+
+    if ((user.credits ?? 0) < 1) {
+      onBookClass(cls);
+      return;
+    }
+
     setBookingId(cls.class_id);
-    onBookClass(cls);
+    try {
+      const res = await api.bookings.create(cls.class_id);
+
+      setSchedules((prev) =>
+        prev.map((day) => ({
+          ...day,
+          classes: day.classes.map((c) =>
+            c.class_id === cls.class_id
+              ? { ...c, booked_spots: c.booked_spots + 1 }
+              : c,
+          ),
+        })),
+      );
+
+      setSuccessToast({ name: cls.name, time: cls.time, day: cls.day_label });
+      onCreditsChanged(res.credits_remaining);
+    } catch (err) {
+      setBookError(err instanceof Error ? err.message : '預約失敗，請再試一次');
+    } finally {
+      setBookingId(null);
+    }
   };
 
   return (
@@ -59,6 +105,53 @@ export default function ScheduleScreen({ onNavigate, onBookClass, user }: Schedu
       exit={{ opacity: 0 }}
       className="pt-32 pb-20 px-6 max-w-7xl mx-auto"
     >
+      {/* Success toast */}
+      <AnimatePresence>
+        {successToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className="fixed top-24 left-1/2 -translate-x-1/2 z-50 bg-secondary-container/95 backdrop-blur-md border border-secondary/30 shadow-xl rounded-2xl px-6 py-4 flex items-start gap-3 max-w-md w-[90%]"
+          >
+            <CheckCircle2 className="w-6 h-6 text-secondary shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="font-bold text-on-secondary-container">預約成功！</p>
+              <p className="text-sm text-on-secondary-container/80 mt-0.5">
+                {successToast.day} · {successToast.time} · {successToast.name}
+              </p>
+              <p className="text-xs text-on-secondary-container/70 mt-1">
+                已扣除 1 堂，剩餘 {user?.credits ?? 0} 堂。可於「我的課表」查看預約
+              </p>
+            </div>
+            <button
+              onClick={() => setSuccessToast(null)}
+              className="text-on-secondary-container/60 hover:text-on-secondary-container"
+              aria-label="關閉"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Booking error banner */}
+      {bookError && (
+        <div className="mb-6 flex items-start gap-3 bg-error/10 border border-error/20 rounded-2xl px-5 py-3">
+          <AlertCircle className="w-5 h-5 text-error shrink-0 mt-0.5" />
+          <div className="flex-1 text-sm text-on-surface">
+            <p className="font-semibold">{bookError}</p>
+          </div>
+          <button
+            onClick={() => setBookError('')}
+            className="text-on-surface-variant hover:text-on-surface"
+            aria-label="關閉"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       <header className="mb-24 text-center">
         <h1 className="text-4xl md:text-[3.5rem] font-bold tracking-tighter text-on-surface mb-6 leading-tight">
           讓律動像家一樣<span className="text-primary italic">自在。</span>
@@ -147,6 +240,15 @@ export default function ScheduleScreen({ onNavigate, onBookClass, user }: Schedu
             </div>
           )}
 
+          {!loading && !error && schedules.length === 0 && (
+            <div className="text-center py-24 bg-surface-container-low rounded-3xl">
+              <p className="text-lg font-semibold text-on-surface mb-2">尚無課程</p>
+              <p className="text-sm text-on-surface-variant">
+                目前還沒有開放預約的課程，請稍後再查看
+              </p>
+            </div>
+          )}
+
           {!loading && !error && schedules.map((daySchedule, index) => (
             <div key={daySchedule.date} className="space-y-6">
               <div className="flex justify-between items-end mb-6 px-2">
@@ -207,13 +309,18 @@ export default function ScheduleScreen({ onNavigate, onBookClass, user }: Schedu
                     <button
                       onClick={() => handleBook(cls)}
                       disabled={spots.type === 'full' || bookingId === cls.class_id}
-                      className={`w-full md:w-auto px-8 py-3.5 rounded-full font-bold transition-all duration-300 ${
+                      className={`w-full md:w-auto px-8 py-3.5 rounded-full font-bold transition-all duration-300 flex items-center justify-center gap-2 ${
                         spots.type === 'full'
                           ? 'bg-surface-container text-on-surface-variant/50 cursor-not-allowed'
                           : 'bg-surface-container-low text-primary hover:bg-primary hover:text-on-primary'
                       }`}
                     >
-                      {spots.type === 'full' ? '已額滿' : '立即預約'}
+                      {bookingId === cls.class_id && <Loader2 className="w-4 h-4 animate-spin" />}
+                      {spots.type === 'full'
+                        ? '已額滿'
+                        : bookingId === cls.class_id
+                        ? '預約中...'
+                        : '立即預約'}
                     </button>
                   </div>
                 );

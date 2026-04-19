@@ -10,7 +10,9 @@ import ConfirmationScreen from './screens/ConfirmationScreen';
 import UboundInfoScreen from './screens/UboundInfoScreen';
 import LineLoginScreen from './screens/LineLoginScreen';
 import GoogleLoginScreen from './screens/GoogleLoginScreen';
-import { User, ClassItem, BookingResult, saveToken, clearToken } from './api/client';
+import AdminScreen from './screens/AdminScreen';
+import PaymentPendingScreen from './screens/PaymentPendingScreen';
+import { User, ClassItem, BookingResult, Order, PaymentInfo, saveToken, clearToken } from './api/client';
 
 export type Screen =
   | 'login'
@@ -18,15 +20,19 @@ export type Screen =
   | 'dashboard'
   | 'checkout'
   | 'confirmation'
+  | 'payment-pending'
   | 'ubound-info'
   | 'line-login'
-  | 'google-login';
+  | 'google-login'
+  | 'admin';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('schedule');
   const [user, setUser] = useState<User | null>(null);
   const [selectedClass, setSelectedClass] = useState<ClassItem | null>(null);
   const [bookingResult, setBookingResult] = useState<BookingResult | null>(null);
+  const [pendingOrder, setPendingOrder] = useState<Order | null>(null);
+  const [paymentInfo, setPaymentInfo] = useState<PaymentInfo | null>(null);
 
   const isLoggedIn = user !== null;
 
@@ -86,8 +92,10 @@ export default function App() {
     handleNavigate('confirmation');
   };
 
-  const handleUpdateCredits = (credits: number) => {
-    if (user) setUser({ ...user, credits });
+  const handleOrderCreated = (order: Order, info: PaymentInfo) => {
+    setPendingOrder(order);
+    setPaymentInfo(info);
+    handleNavigate('payment-pending');
   };
 
   return (
@@ -116,6 +124,9 @@ export default function App() {
               key="schedule"
               onNavigate={handleNavigate}
               onBookClass={handleBookClass}
+              onCreditsChanged={(credits) => {
+                if (user) setUser({ ...user, credits });
+              }}
               user={user}
             />
           )}
@@ -125,6 +136,7 @@ export default function App() {
               onNavigate={handleNavigate}
               user={user}
               onLogout={handleLogout}
+              onUserUpdated={(u) => setUser(u)}
             />
           )}
           {currentScreen === 'checkout' && (
@@ -134,7 +146,15 @@ export default function App() {
               selectedClass={selectedClass}
               user={user}
               onBookingComplete={handleBookingComplete}
-              onUpdateCredits={handleUpdateCredits}
+              onOrderCreated={handleOrderCreated}
+            />
+          )}
+          {currentScreen === 'payment-pending' && (
+            <PaymentPendingScreen
+              key="payment-pending"
+              onNavigate={handleNavigate}
+              order={pendingOrder}
+              paymentInfo={paymentInfo}
             />
           )}
           {currentScreen === 'confirmation' && (
@@ -146,6 +166,9 @@ export default function App() {
           )}
           {currentScreen === 'ubound-info' && (
             <UboundInfoScreen key="ubound-info" onNavigate={handleNavigate} />
+          )}
+          {currentScreen === 'admin' && (
+            <AdminScreen key="admin" onNavigate={handleNavigate} />
           )}
         </AnimatePresence>
       </main>

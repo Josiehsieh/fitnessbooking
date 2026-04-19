@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { api } from '../api/client';
 
 interface NavbarProps {
   currentScreen: string;
@@ -8,12 +9,24 @@ interface NavbarProps {
 
 export default function Navbar({ currentScreen, onNavigate, isLoggedIn }: NavbarProps) {
   const [scrolled, setScrolled] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 20);
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  useEffect(() => {
+    if (!isLoggedIn) {
+      setIsAdmin(false);
+      return;
+    }
+    api.admin
+      .check()
+      .then((r) => setIsAdmin(r.is_admin))
+      .catch(() => setIsAdmin(false));
+  }, [isLoggedIn]);
 
   return (
     <nav className={`fixed top-0 w-full z-50 transition-all duration-300 ${scrolled ? 'bg-surface/80 backdrop-blur-xl shadow-sm' : 'bg-transparent'}`}>
@@ -53,9 +66,25 @@ export default function Navbar({ currentScreen, onNavigate, isLoggedIn }: Navbar
           >
             個人檔案
           </button>
+          {isAdmin && (
+            <button
+              onClick={() => onNavigate('admin')}
+              className={`${currentScreen === 'admin' ? 'text-primary border-b-2 border-primary pb-1' : 'text-amber-600 hover:text-amber-700'} transition-all font-semibold`}
+            >
+              管理後台
+            </button>
+          )}
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 md:gap-4">
+          {isAdmin && (
+            <button
+              onClick={() => onNavigate('admin')}
+              className="bg-amber-500 text-white px-4 md:px-5 py-2 md:py-2.5 rounded-full font-headline font-semibold text-xs md:text-sm hover:bg-amber-600 transition-all shadow-md"
+            >
+              管理後台
+            </button>
+          )}
           {!isLoggedIn && currentScreen !== 'login' && (
             <button 
               onClick={() => onNavigate('login')}

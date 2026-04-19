@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
-import { Sparkles, ArrowRight, CalendarDays, Clock, Rocket, Loader2, LogOut } from 'lucide-react';
+import { Sparkles, ArrowRight, CalendarDays, Rocket, Loader2, LogOut, Receipt, Clock, AlertCircle, CheckCircle2, XCircle, User as UserIcon, Lock, Save, ChevronDown, ChevronUp, Bell, Mail, MessageSquare } from 'lucide-react';
 import { Screen } from '../App';
-import { api, Booking, User } from '../api/client';
+import { api, Booking, User, Order, NotificationPrefs } from '../api/client';
 
 interface DashboardScreenProps {
   onNavigate: (screen: Screen) => void;
   user: User | null;
   onLogout: () => void;
+  onUserUpdated: (user: User) => void;
 }
 
 const CLASS_IMAGES: Record<string, string> = {
@@ -29,26 +30,56 @@ function formatDatetime(dt: string) {
   return `${Number(month)}月${Number(day)}日 · ${time}`;
 }
 
-export default function DashboardScreen({ onNavigate, user, onLogout }: DashboardScreenProps) {
+function parseClassDatetime(dt: string): Date | null {
+  if (!dt) return null;
+  const iso = dt.replace(' ', 'T');
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function canCancel(dt: string): boolean {
+  const d = parseClassDatetime(dt);
+  if (!d) return true;
+  const hoursUntil = (d.getTime() - Date.now()) / 3_600_000;
+  return hoursUntil >= 6;
+}
+
+function formatExpireNotice(expire?: string): { text: string; urgent: boolean } | null {
+  if (!expire) return null;
+  const d = new Date(expire);
+  if (isNaN(d.getTime())) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.floor((d.getTime() - today.getTime()) / 86_400_000);
+  if (days < 0) return { text: `已於 ${expire} 過期`, urgent: true };
+  if (days === 0) return { text: `今日到期（${expire}）`, urgent: true };
+  if (days <= 7) return { text: `還有 ${days} 天到期（${expire}）`, urgent: true };
+  return { text: `有效期至 ${expire}`, urgent: false };
+}
+
+export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpdated }: DashboardScreenProps) {
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const credits = user?.credits ?? 0;
-  const TOTAL_CREDITS = 10;
+  const expireNotice = formatExpireNotice(user?.credits_expire_at);
 
   useEffect(() => {
     if (!user) return;
-    api.bookings
-      .list()
-      .then((res) => setBookings(res.bookings))
+    Promise.all([api.bookings.list(), api.orders.listMine()])
+      .then(([b, o]) => {
+        setBookings(b.bookings);
+        setOrders(o.orders);
+      })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [user]);
 
   const handleCancel = async (bookingId: string) => {
-    if (!confirm('確定要取消這堂課嗎？')) return;
+    if (!confirm('確定要取消這堂課嗎？取消後堂數會退還。')) return;
     setCancellingId(bookingId);
     try {
       const res = await api.bookings.cancel(bookingId);
@@ -102,32 +133,59 @@ export default function DashboardScreen({ onNavigate, user, onLogout }: Dashboar
         <div className="lg:col-span-4 flex flex-col gap-8">
           {/* Usage Card */}
           <div className="bg-surface-container-lowest p-8 md:p-10 rounded-3xl shadow-sm border border-outline-variant/10">
-            <h3 className="text-xs font-bold uppercase tracking-[0.1em] text-on-surface-variant mb-6">堂數使用情況</h3>
+            <h3 className="text-xs font-bold uppercase tracking-[0.1em] text-on-surface-variant mb-6">可預約堂數</h3>
             <div className="flex items-baseline gap-2 mb-2">
-              <span className="text-5xl font-bold font-headline text-primary">
-                {String(credits).padStart(2, '0')}
-              </span>
-              <span className="text-2xl font-medium text-outline">/ {TOTAL_CREDITS}</span>
-            </div>
-            <p className="text-on-surface-variant text-sm mb-8 font-medium">可用堂數</p>
-
-            <div className="w-full h-3 bg-surface-container rounded-full overflow-hidden">
-              <div
-                className="h-full bg-primary rounded-full transition-all"
-                style={{ width: `${Math.min(100, (credits / TOTAL_CREDITS) * 100)}%` }}
-              ></div>
+              <span className="text-6xl font-bold font-headline text-primary">{credits}</span>
+              <span className="text-2xl font-medium text-outline">堂</span>
             </div>
 
-            <div className="mt-8 pt-8 border-t border-outline-variant/10 flex justify-between items-center">
-              <div>
-                <p className="text-2xl font-bold font-headline text-secondary">{credits}</p>
-                <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider">剩餘堂數</p>
+            {expireNotice && (
+              <div className={`mt-6 flex items-center gap-2 px-4 py-3 rounded-2xl ${
+                expireNotice.urgent
+                  ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                  : 'bg-surface-container text-on-surface-variant'
+              }`}>
+                <Clock className="w-4 h-4 shrink-0" />
+                <p className="text-sm font-medium">{expireNotice.text}</p>
               </div>
-              <div className="bg-secondary/10 p-4 rounded-full text-secondary-container">
-                <Sparkles className="w-6 h-6 text-secondary" />
-              </div>
+            )}
+
+            <div className="mt-8 pt-8 border-t border-outline-variant/10 flex gap-3">
+              <button
+                onClick={() => onNavigate(credits > 0 ? 'schedule' : 'checkout')}
+                className="flex-1 py-3 rounded-full bg-primary text-on-primary text-sm font-bold hover:opacity-90 transition-opacity"
+              >
+                {credits > 0 ? '預約課程' : '購買堂數'}
+              </button>
+              <button
+                onClick={() => onNavigate('checkout')}
+                className="px-4 py-3 rounded-full bg-surface-container text-on-surface text-sm font-medium hover:bg-surface-container-high transition-colors flex items-center gap-1"
+                title="加購堂數"
+              >
+                <Sparkles className="w-4 h-4" />
+                加購
+              </button>
             </div>
           </div>
+
+          {/* Orders status */}
+          {orders.length > 0 && (
+            <div className="bg-surface-container-lowest p-8 rounded-3xl shadow-sm border border-outline-variant/10">
+              <div className="flex items-center gap-2 mb-5">
+                <Receipt className="w-4 h-4 text-on-surface-variant" />
+                <h3 className="text-xs font-bold uppercase tracking-[0.1em] text-on-surface-variant">我的訂單</h3>
+              </div>
+              <div className="space-y-3">
+                {orders.slice(0, 5).map((o) => (
+                  <OrderRow key={o.order_id} order={o} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Profile card */}
+          <ProfileCard user={user} onUserUpdated={onUserUpdated} />
+          <NotificationsCard />
 
           {/* Personal Message */}
           <div className="bg-secondary-container/40 p-8 md:p-10 rounded-3xl relative overflow-hidden group">
@@ -186,46 +244,55 @@ export default function DashboardScreen({ onNavigate, user, onLogout }: Dashboar
             )}
 
             <div className="space-y-4">
-              {bookings.map((booking) => (
-                <div
-                  key={booking.booking_id}
-                  className="bg-surface-container-lowest p-2 rounded-3xl shadow-sm hover:shadow-md transition-shadow duration-300 border border-outline-variant/10"
-                >
-                  <div className="flex flex-col md:flex-row items-center gap-6 p-4 md:p-6">
-                    <div className="w-24 h-24 rounded-2xl overflow-hidden shrink-0">
-                      <img
-                        src={getImage(booking.class_name)}
-                        alt={booking.class_name}
-                        className="w-full h-full object-cover"
-                      />
-                    </div>
-                    <div className="flex-grow text-center md:text-left">
-                      <div className="flex flex-wrap justify-center md:justify-start gap-2 mb-3">
-                        <span className="bg-primary-container text-on-primary-container px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
-                          已確認
-                        </span>
+              {bookings.map((booking) => {
+                const cancellable = canCancel(booking.class_datetime);
+                return (
+                  <div
+                    key={booking.booking_id}
+                    className="bg-surface-container-lowest p-2 rounded-3xl shadow-sm hover:shadow-md transition-shadow duration-300 border border-outline-variant/10"
+                  >
+                    <div className="flex flex-col md:flex-row items-center gap-6 p-4 md:p-6">
+                      <div className="w-24 h-24 rounded-2xl overflow-hidden shrink-0">
+                        <img
+                          src={getImage(booking.class_name)}
+                          alt={booking.class_name}
+                          className="w-full h-full object-cover"
+                        />
                       </div>
-                      <h3 className="text-xl font-bold font-headline mb-2">{booking.class_name}</h3>
-                      <p className="text-on-surface-variant text-sm flex items-center justify-center md:justify-start gap-2 font-medium">
-                        <CalendarDays className="w-4 h-4" />
-                        {formatDatetime(booking.class_datetime)}
-                      </p>
-                    </div>
-                    <div className="shrink-0 w-full md:w-auto mt-4 md:mt-0">
-                      <button
-                        onClick={() => handleCancel(booking.booking_id)}
-                        disabled={cancellingId === booking.booking_id}
-                        className="w-full md:w-auto px-6 py-3 rounded-full border border-error/30 text-error font-headline font-bold text-sm hover:bg-error/5 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                      >
-                        {cancellingId === booking.booking_id ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : null}
-                        取消課程
-                      </button>
+                      <div className="flex-grow text-center md:text-left">
+                        <div className="flex flex-wrap justify-center md:justify-start gap-2 mb-3">
+                          <span className="bg-primary-container text-on-primary-container px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
+                            已確認
+                          </span>
+                          {!cancellable && (
+                            <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
+                              6 小時內
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="text-xl font-bold font-headline mb-2">{booking.class_name}</h3>
+                        <p className="text-on-surface-variant text-sm flex items-center justify-center md:justify-start gap-2 font-medium">
+                          <CalendarDays className="w-4 h-4" />
+                          {formatDatetime(booking.class_datetime)}
+                        </p>
+                      </div>
+                      <div className="shrink-0 w-full md:w-auto mt-4 md:mt-0">
+                        <button
+                          onClick={() => handleCancel(booking.booking_id)}
+                          disabled={cancellingId === booking.booking_id || !cancellable}
+                          title={!cancellable ? '課程開始前 6 小時內無法取消' : ''}
+                          className="w-full md:w-auto px-6 py-3 rounded-full border border-error/30 text-error font-headline font-bold text-sm hover:bg-error/5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                        >
+                          {cancellingId === booking.booking_id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : null}
+                          取消課程
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 
@@ -256,5 +323,371 @@ export default function DashboardScreen({ onNavigate, user, onLogout }: Dashboar
         </div>
       </div>
     </motion.div>
+  );
+}
+
+function ProfileCard({ user, onUserUpdated }: { user: User; onUserUpdated: (u: User) => void }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(user.name || '');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  const hasPassword = user.has_password ?? true;
+  const nameChanged = name.trim() && name.trim() !== user.name;
+  const wantsPasswordChange = Boolean(newPassword || confirmPassword || (hasPassword && currentPassword));
+  const canSave = nameChanged || wantsPasswordChange;
+
+  const resetPasswordFields = () => {
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+  };
+
+  const handleSave = async () => {
+    setMessage(null);
+
+    if (wantsPasswordChange) {
+      if (newPassword.length < 6) {
+        setMessage({ text: '新密碼至少 6 個字元', type: 'error' });
+        return;
+      }
+      if (newPassword !== confirmPassword) {
+        setMessage({ text: '兩次密碼輸入不一致', type: 'error' });
+        return;
+      }
+      if (hasPassword && !currentPassword) {
+        setMessage({ text: '請輸入目前密碼', type: 'error' });
+        return;
+      }
+    }
+
+    const payload: { name?: string; current_password?: string; new_password?: string } = {};
+    if (nameChanged) payload.name = name.trim();
+    if (wantsPasswordChange) {
+      payload.new_password = newPassword;
+      if (hasPassword) payload.current_password = currentPassword;
+    }
+
+    setSaving(true);
+    try {
+      const res = await api.auth.updateMe(payload);
+      onUserUpdated(res.user);
+      setMessage({ text: res.message || '已更新', type: 'success' });
+      resetPasswordFields();
+    } catch (e) {
+      setMessage({
+        text: e instanceof Error ? e.message : '更新失敗，請再試一次',
+        type: 'error',
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bg-surface-container-lowest p-8 rounded-3xl shadow-sm border border-outline-variant/10">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between gap-3 text-left"
+      >
+        <div className="flex items-center gap-3">
+          <UserIcon className="w-4 h-4 text-on-surface-variant" />
+          <div>
+            <h3 className="text-xs font-bold uppercase tracking-[0.1em] text-on-surface-variant">個人資料</h3>
+            <p className="text-sm text-on-surface mt-1">{user.email}</p>
+          </div>
+        </div>
+        {open ? <ChevronUp className="w-4 h-4 text-on-surface-variant" /> : <ChevronDown className="w-4 h-4 text-on-surface-variant" />}
+      </button>
+
+      {open && (
+        <div className="mt-6 space-y-5">
+          {/* Name */}
+          <div>
+            <label className="block text-xs font-bold text-on-surface-variant mb-2 uppercase tracking-wider">顯示名稱</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={40}
+              className="w-full px-4 py-2.5 rounded-xl bg-surface-container-low border-none focus:ring-2 focus:ring-primary/20 outline-none text-sm"
+              placeholder="您的名稱"
+            />
+          </div>
+
+          {/* Password */}
+          <div className="pt-5 border-t border-outline-variant/15">
+            <div className="flex items-center gap-2 mb-3">
+              <Lock className="w-3.5 h-3.5 text-on-surface-variant" />
+              <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider">
+                {hasPassword ? '變更密碼' : '設定密碼'}
+              </label>
+            </div>
+            {hasPassword && (
+              <input
+                type="password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                placeholder="目前密碼"
+                className="w-full px-4 py-2.5 rounded-xl bg-surface-container-low border-none focus:ring-2 focus:ring-primary/20 outline-none text-sm mb-2"
+              />
+            )}
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="新密碼（至少 6 個字元）"
+              className="w-full px-4 py-2.5 rounded-xl bg-surface-container-low border-none focus:ring-2 focus:ring-primary/20 outline-none text-sm mb-2"
+            />
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="再次輸入新密碼"
+              className="w-full px-4 py-2.5 rounded-xl bg-surface-container-low border-none focus:ring-2 focus:ring-primary/20 outline-none text-sm"
+            />
+            {!hasPassword && (
+              <p className="text-[11px] text-on-surface-variant mt-2">
+                您目前透過第三方登入，設定密碼後也可用 Email 登入
+              </p>
+            )}
+          </div>
+
+          {/* Message */}
+          {message && (
+            <div
+              className={`flex items-start gap-2 text-sm rounded-xl px-4 py-3 ${
+                message.type === 'success'
+                  ? 'bg-green-50 text-green-800 border border-green-200'
+                  : 'bg-error/10 text-error border border-error/20'
+              }`}
+            >
+              {message.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              )}
+              <p>{message.text}</p>
+            </div>
+          )}
+
+          <button
+            onClick={handleSave}
+            disabled={!canSave || saving}
+            className="w-full py-3 rounded-full bg-primary text-on-primary text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            儲存變更
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NotificationsCard() {
+  const [open, setOpen] = useState(false);
+  const [prefs, setPrefs] = useState<NotificationPrefs | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState<'email' | 'line' | null>(null);
+  const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  useEffect(() => {
+    if (!open || prefs) return;
+    setLoading(true);
+    api.auth
+      .getNotifications()
+      .then(setPrefs)
+      .catch((e) => setMessage({ text: e instanceof Error ? e.message : '讀取失敗', type: 'error' }))
+      .finally(() => setLoading(false));
+  }, [open, prefs]);
+
+  const toggle = async (key: 'notify_email' | 'notify_line') => {
+    if (!prefs) return;
+    const next = !prefs[key];
+    setSaving(key === 'notify_email' ? 'email' : 'line');
+    setMessage(null);
+    try {
+      const res = await api.auth.updateNotifications({ [key]: next });
+      setPrefs({ ...prefs, notify_email: res.notify_email, notify_line: res.notify_line });
+      setMessage({ text: '通知設定已更新', type: 'success' });
+    } catch (e) {
+      setMessage({ text: e instanceof Error ? e.message : '更新失敗', type: 'error' });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <div className="bg-surface-container-lowest p-8 rounded-3xl shadow-sm border border-outline-variant/10">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between gap-3 text-left"
+      >
+        <div className="flex items-center gap-3">
+          <Bell className="w-4 h-4 text-on-surface-variant" />
+          <div>
+            <h3 className="text-xs font-bold uppercase tracking-[0.1em] text-on-surface-variant">通知設定</h3>
+            <p className="text-sm text-on-surface mt-1">預約 / 訂單 / 堂數變動通知</p>
+          </div>
+        </div>
+        {open ? <ChevronUp className="w-4 h-4 text-on-surface-variant" /> : <ChevronDown className="w-4 h-4 text-on-surface-variant" />}
+      </button>
+
+      {open && (
+        <div className="mt-6 space-y-4">
+          {loading && (
+            <div className="flex items-center gap-2 text-sm text-on-surface-variant">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              讀取中…
+            </div>
+          )}
+
+          {prefs && (
+            <>
+              <ToggleRow
+                icon={<Mail className="w-4 h-4" />}
+                title="Email 通知"
+                desc={
+                  prefs.has_real_email
+                    ? '重要通知會寄到您的信箱'
+                    : '您目前透過 LINE 登入，尚未綁定 Email（無法寄送）'
+                }
+                enabled={prefs.notify_email}
+                disabled={!prefs.has_real_email || !prefs.server_channels.email}
+                warning={
+                  !prefs.server_channels.email ? '（後台尚未設定 SMTP）' : undefined
+                }
+                loading={saving === 'email'}
+                onToggle={() => toggle('notify_email')}
+              />
+
+              <ToggleRow
+                icon={<MessageSquare className="w-4 h-4" />}
+                title="LINE 推播"
+                desc={
+                  prefs.line_linked
+                    ? '已綁定 LINE，可接收推播'
+                    : '請改用 LINE 登入，並加入本站官方帳號為好友'
+                }
+                enabled={prefs.notify_line}
+                disabled={!prefs.line_linked || !prefs.server_channels.line}
+                warning={
+                  !prefs.server_channels.line ? '（後台尚未設定 LINE Messaging API）' : undefined
+                }
+                loading={saving === 'line'}
+                onToggle={() => toggle('notify_line')}
+              />
+            </>
+          )}
+
+          {message && (
+            <div
+              className={`flex items-start gap-2 text-sm rounded-xl px-4 py-3 ${
+                message.type === 'success'
+                  ? 'bg-green-50 text-green-800 border border-green-200'
+                  : 'bg-error/10 text-error border border-error/20'
+              }`}
+            >
+              {message.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              )}
+              <p>{message.text}</p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToggleRow({
+  icon,
+  title,
+  desc,
+  enabled,
+  disabled,
+  warning,
+  loading,
+  onToggle,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+  enabled: boolean;
+  disabled?: boolean;
+  warning?: string;
+  loading?: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 p-4 rounded-2xl bg-surface-container-low">
+      <div className="flex items-start gap-3 flex-1 min-w-0">
+        <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0">
+          {icon}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold text-on-surface">{title}</div>
+          <p className="text-xs text-on-surface-variant mt-0.5 leading-relaxed">
+            {desc}
+            {warning && <span className="text-amber-700"> {warning}</span>}
+          </p>
+        </div>
+      </div>
+      <button
+        onClick={onToggle}
+        disabled={disabled || loading}
+        className={`relative w-11 h-6 rounded-full shrink-0 transition-colors ${
+          enabled ? 'bg-primary' : 'bg-outline-variant/40'
+        } ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+        aria-label="toggle"
+      >
+        <span
+          className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${
+            enabled ? 'translate-x-5' : ''
+          }`}
+        />
+        {loading && (
+          <Loader2 className="absolute inset-0 m-auto w-3 h-3 animate-spin text-white" />
+        )}
+      </button>
+    </div>
+  );
+}
+
+function OrderRow({ order }: { order: Order }) {
+  const statusConfig = {
+    pending: { icon: <Clock className="w-3.5 h-3.5" />, label: '待付款', cls: 'bg-amber-100 text-amber-800' },
+    paid: { icon: <CheckCircle2 className="w-3.5 h-3.5" />, label: '已付款', cls: 'bg-green-100 text-green-800' },
+    cancelled: { icon: <XCircle className="w-3.5 h-3.5" />, label: '已取消', cls: 'bg-gray-100 text-gray-600' },
+  } as const;
+  const cfg = statusConfig[order.status] || statusConfig.pending;
+  return (
+    <div className="flex justify-between items-start gap-3 p-3 rounded-2xl bg-surface-container/50 hover:bg-surface-container transition-colors">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1">
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${cfg.cls}`}>
+            {cfg.icon}
+            {cfg.label}
+          </span>
+          <span className="text-xs text-on-surface-variant">{order.quantity} 堂</span>
+        </div>
+        <p className="text-xs text-on-surface-variant font-mono truncate">#{order.order_id}</p>
+        {order.status === 'pending' && (
+          <p className="text-[11px] text-amber-700 mt-1 flex items-center gap-1">
+            <AlertCircle className="w-3 h-3" />
+            請完成匯款並傳截圖給小助理
+          </p>
+        )}
+      </div>
+      <div className="text-right">
+        <p className="text-sm font-bold text-primary">NT${order.total.toLocaleString()}</p>
+      </div>
+    </div>
   );
 }
