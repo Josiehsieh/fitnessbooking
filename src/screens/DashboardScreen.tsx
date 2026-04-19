@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { Sparkles, ArrowRight, CalendarDays, Rocket, Loader2, LogOut, Receipt, Clock, AlertCircle, CheckCircle2, XCircle, User as UserIcon, Lock, Save, ChevronDown, ChevronUp, Bell, Mail, MessageSquare } from 'lucide-react';
+import { Sparkles, ArrowRight, CalendarDays, Rocket, Loader2, LogOut, Receipt, Clock, AlertCircle, CheckCircle2, XCircle, User as UserIcon, Lock, Save, ChevronDown, ChevronUp, Bell, Mail, MessageSquare, RefreshCw } from 'lucide-react';
 import { Screen } from '../App';
-import { api, Booking, User, Order, NotificationPrefs } from '../api/client';
+import { api, Booking, User, Order, NotificationPrefs, clearGetCache } from '../api/client';
 
 interface DashboardScreenProps {
   onNavigate: (screen: Screen) => void;
@@ -61,22 +61,70 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const lastRefreshRef = useRef(0);
 
   const credits = user?.credits ?? 0;
   const expireNotice = formatExpireNotice(user?.credits_expire_at);
+  const hasPendingOrder = orders.some((o) => o.status === 'pending');
 
-  useEffect(() => {
-    if (!user) return;
-    Promise.all([api.bookings.list(), api.orders.listMine()])
-      .then(([b, o]) => {
+  // Refetch bookings + orders + fresh user (credits may have been topped up by admin).
+  const refresh = useCallback(
+    async (opts?: { force?: boolean; silent?: boolean }) => {
+      if (!user) return;
+      const now = Date.now();
+      // Throttle automatic refreshes to at most once every 5s unless forced.
+      if (!opts?.force && now - lastRefreshRef.current < 5000) return;
+      lastRefreshRef.current = now;
+      if (opts?.force) clearGetCache('/api/');
+      if (!opts?.silent) setRefreshing(true);
+      try {
+        const [me, b, o] = await Promise.all([
+          api.auth.getMe(),
+          api.bookings.list(),
+          api.orders.listMine(),
+        ]);
         setBookings(b.bookings);
         setOrders(o.orders);
-      })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [user]);
+        // Propagate the fresh user so credits / expire date update across the app.
+        if (me?.user) onUserUpdated(me.user);
+      } catch (err: unknown) {
+        if (!opts?.silent) setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setRefreshing(false);
+        setLoading(false);
+      }
+    },
+    [user, onUserUpdated],
+  );
+
+  useEffect(() => {
+    refresh({ force: true, silent: true });
+  }, [refresh]);
+
+  useEffect(() => {
+    const onFocus = () => refresh({ force: true, silent: true });
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refresh({ force: true, silent: true });
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [refresh]);
+
+  // Poll every 20s while there is a pending order awaiting admin confirmation.
+  useEffect(() => {
+    if (!hasPendingOrder) return;
+    const id = window.setInterval(() => {
+      refresh({ force: true, silent: true });
+    }, 20000);
+    return () => window.clearInterval(id);
+  }, [hasPendingOrder, refresh]);
 
   const handleCancel = async (bookingId: string) => {
     if (!confirm('確定要取消這堂課嗎？取消後堂數會退還。')) return;
@@ -84,6 +132,7 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
     try {
       const res = await api.bookings.cancel(bookingId);
       setBookings((prev) => prev.filter((b) => b.booking_id !== bookingId));
+      if (user) onUserUpdated({ ...user, credits: res.credits });
       alert(`課程已取消，堂數已退還。目前剩餘：${res.credits} 堂`);
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : '取消失敗');
@@ -133,11 +182,28 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
         <div className="lg:col-span-4 flex flex-col gap-8">
           {/* Usage Card */}
           <div className="bg-surface-container-lowest p-8 md:p-10 rounded-3xl shadow-sm border border-outline-variant/10">
-            <h3 className="text-xs font-bold uppercase tracking-[0.1em] text-on-surface-variant mb-6">可預約堂數</h3>
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xs font-bold uppercase tracking-[0.1em] text-on-surface-variant">可預約堂數</h3>
+              <button
+                onClick={() => refresh({ force: true })}
+                disabled={refreshing}
+                className="flex items-center gap-1 text-xs text-on-surface-variant hover:text-primary transition-colors disabled:opacity-50"
+                title="重新整理堂數"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+                {refreshing ? '更新中' : '重新整理'}
+              </button>
+            </div>
             <div className="flex items-baseline gap-2 mb-2">
               <span className="text-6xl font-bold font-headline text-primary">{credits}</span>
               <span className="text-2xl font-medium text-outline">堂</span>
             </div>
+            {hasPendingOrder && (
+              <p className="mt-3 text-xs text-on-surface-variant flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5" />
+                有訂單等待管理員確認，收款後堂數會自動更新
+              </p>
+            )}
 
             {expireNotice && (
               <div className={`mt-6 flex items-center gap-2 px-4 py-3 rounded-2xl ${
