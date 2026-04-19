@@ -47,9 +47,15 @@ export default function App() {
 
     if (oauthToken && oauthUserB64) {
       try {
-        const decoded = decodeURIComponent(oauthUserB64);
-        // Base64 may include +/= characters; atob handles standard base64 only.
-        const parsed = JSON.parse(atob(decoded));
+        const b64 = decodeURIComponent(oauthUserB64);
+        // atob() returns a binary string (one byte per char in Latin-1).
+        // The payload is UTF-8 encoded JSON, so we must decode it as UTF-8
+        // otherwise Chinese / emoji in the display name become mojibake.
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const jsonStr = new TextDecoder('utf-8').decode(bytes);
+        const parsed = JSON.parse(jsonStr);
         setUser(parsed);
         saveToken(oauthToken);
         window.history.replaceState({}, '', '/');

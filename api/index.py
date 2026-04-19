@@ -1067,11 +1067,11 @@ def _upsert_oauth_user(
                 False,
             )
 
-    # New user – grant 5 free credits on first OAuth login
+    # New user – credits start at 0, must be purchased via orders
     user_id = provider_uid
     token = secrets.token_hex(32)
     now = datetime.datetime.now().isoformat()
-    ws.append_row([user_id, email, "", name, 5, now, token])
+    ws.append_row([user_id, email, "", name, 0, now, token])
     # If LINE Login, record userId and enable LINE notifications
     if line_user_id:
         line_col = _users_col_index("line_user_id")
@@ -1081,7 +1081,7 @@ def _upsert_oauth_user(
         ws.update_cell(new_row, notify_line_col, "TRUE")
     _invalidate_cache("Users")
     return (
-        {"id": user_id, "email": email, "name": name, "credits": 5},
+        {"id": user_id, "email": email, "name": name, "credits": 0},
         token,
         True,
     )
@@ -1161,7 +1161,7 @@ def google_callback():
             _notify(
                 {"email": email, "name": name, "notify_email": "TRUE"},
                 "歡迎加入 JosieUBOUND！",
-                _welcome_email_html(name, 5),
+                _welcome_email_html(name, 0),
                 line_text="",
             )
         return _oauth_success_redirect(user, token)
@@ -1234,8 +1234,9 @@ def line_callback():
         if is_new:
             _send_line_push(
                 uid,
-                f"歡迎加入 JosieUBOUND，{name}！\n我們送您 5 堂免費體驗課程，趕快到官網預約吧。\n"
-                "之後預約、訂單與堂數通知都會透過 LINE 傳給您。",
+                f"歡迎加入 JosieUBOUND，{name}！\n"
+                "到官網購買堂數後即可開始預約課程。\n"
+                "之後預約、訂單與堂數變動都會透過 LINE 通知您。",
             )
         return _oauth_success_redirect(user, token)
     except Exception as e:
