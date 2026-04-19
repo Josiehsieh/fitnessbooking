@@ -162,7 +162,7 @@ export default function ScheduleScreen({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="pt-32 pb-20 px-6 max-w-7xl mx-auto"
+      className="pt-24 md:pt-32 pb-20 px-4 md:px-6 max-w-7xl mx-auto"
     >
       {/* Success toast */}
       <AnimatePresence>
@@ -211,20 +211,23 @@ export default function ScheduleScreen({
         </div>
       )}
 
-      <header className="mb-24 text-center">
-        <h1 className="text-4xl md:text-[3.5rem] font-bold tracking-tighter text-on-surface mb-6 leading-tight">
+      <header className="mb-12 md:mb-24 text-center">
+        <h1 className="text-3xl md:text-[3.5rem] font-bold tracking-tighter text-on-surface mb-4 md:mb-6 leading-tight">
           讓律動像家一樣<span className="text-primary italic">自在。</span>
         </h1>
-        <p className="text-lg text-on-surface-variant max-w-2xl mx-auto leading-relaxed">
+        <p className="text-base md:text-lg text-on-surface-variant max-w-2xl mx-auto leading-relaxed">
           加入我們的UBound空間，享受節奏感與律動的快樂。在課程中找回快樂及平衡。
         </p>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Calendar Section */}
-        <section className="lg:col-span-4 bg-surface-container-low p-8 rounded-3xl sticky top-28">
-          <div className="flex justify-between items-center mb-8">
-            <h2 className="text-xl font-bold text-on-surface">
+        {/* Calendar Section
+            Note: sticky is only applied on lg+ screens. On mobile the
+            calendar would otherwise stay pinned to the top and hide the
+            class list below it, preventing users from booking. */}
+        <section className="lg:col-span-4 bg-surface-container-low p-5 md:p-8 rounded-3xl lg:sticky lg:top-28">
+          <div className="flex justify-between items-center mb-6 md:mb-8">
+            <h2 className="text-lg md:text-xl font-bold text-on-surface">
               {calYear}年 {calMonth + 1}月
             </h2>
             <div className="flex gap-2">
