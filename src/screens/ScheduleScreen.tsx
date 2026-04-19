@@ -97,7 +97,19 @@ export default function ScheduleScreen({
 
   useEffect(() => {
     api.classes.list()
-      .then((res) => setSchedules(groupByDate(res.classes)))
+      .then((res) => {
+        // 只顯示「今天」到「今天+28 天」之間的課程（未來四週）
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const maxDate = new Date(today);
+        maxDate.setDate(maxDate.getDate() + 28);
+        const fromISO = toISODate(today);
+        const toISO = toISODate(maxDate);
+        const windowed = res.classes.filter(
+          (c) => c.date >= fromISO && c.date <= toISO,
+        );
+        setSchedules(groupByDate(windowed));
+      })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, []);
@@ -328,11 +340,17 @@ export default function ScheduleScreen({
 
           {!loading && !error && schedules.length === 0 && (
             <div className="text-center py-24 bg-surface-container-low rounded-3xl">
-              <p className="text-lg font-semibold text-on-surface mb-2">尚無課程</p>
+              <p className="text-lg font-semibold text-on-surface mb-2">尚無可預約課程</p>
               <p className="text-sm text-on-surface-variant">
-                目前還沒有開放預約的課程，請稍後再查看
+                未來四週內目前還沒有開放預約的課程，請稍後再查看
               </p>
             </div>
+          )}
+
+          {!loading && !error && schedules.length > 0 && (
+            <p className="text-xs text-on-surface-variant/80 px-2 -mb-4">
+              顯示今日起 <span className="font-semibold text-on-surface">未來四週</span> 內的課程（共 {schedules.reduce((n, d) => n + d.classes.length, 0)} 堂）
+            </p>
           )}
 
           {!loading && !error && schedules.map((daySchedule, index) => (
