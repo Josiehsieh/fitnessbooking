@@ -342,10 +342,15 @@ export const api = {
     listOrders: () =>
       apiFetch<{ orders: Order[]; total: number }>("/api/admin/orders"),
 
-    confirmOrder: (orderId: string) =>
+    confirmOrder: (orderId: string, creditsExpireAt?: string) =>
       apiFetch<{ message: string; credits: number; credits_expire_at: string }>(
         `/api/admin/orders/${orderId}/confirm`,
-        { method: "POST" }
+        {
+          method: "POST",
+          body: JSON.stringify(
+            creditsExpireAt ? { credits_expire_at: creditsExpireAt } : {}
+          ),
+        }
       ),
 
     cancelOrder: (orderId: string, reason?: string) =>

@@ -828,6 +828,7 @@ function OrdersTab() {
   const [error, setError] = useState('');
   const [filter, setFilter] = useState<'all' | 'pending' | 'paid' | 'cancelled'>('pending');
   const [busyId, setBusyId] = useState('');
+  const [confirmTarget, setConfirmTarget] = useState<Order | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -840,12 +841,14 @@ function OrdersTab() {
 
   useEffect(load, []);
 
-  const confirm = async (id: string) => {
-    if (!window.confirm('確認此訂單已收款？堂數將發放給會員，有效期至本月月底。')) return;
-    setBusyId(id);
+  const openConfirmDialog = (order: Order) => setConfirmTarget(order);
+
+  const submitConfirm = async (orderId: string, expireAt: string) => {
+    setBusyId(orderId);
     try {
-      const res = await api.admin.confirmOrder(id);
+      const res = await api.admin.confirmOrder(orderId, expireAt);
       alert(`成功！會員目前堂數：${res.credits}（有效期至 ${res.credits_expire_at}）`);
+      setConfirmTarget(null);
       load();
     } catch (e) {
       alert(e instanceof Error ? e.message : '確認失敗');
@@ -936,7 +939,7 @@ function OrdersTab() {
                 {o.status === 'pending' && (
                   <div className="flex gap-2 shrink-0">
                     <button
-                      onClick={() => confirm(o.order_id)}
+                      onClick={() => openConfirmDialog(o)}
                       disabled={busyId === o.order_id}
                       className="px-5 py-2.5 rounded-full bg-primary text-on-primary font-semibold text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
                     >
@@ -958,7 +961,161 @@ function OrdersTab() {
           ))}
         </div>
       )}
+
+      {confirmTarget && (
+        <ConfirmOrderModal
+          order={confirmTarget}
+          busy={busyId === confirmTarget.order_id}
+          onCancel={() => setConfirmTarget(null)}
+          onSubmit={(expireAt) => submitConfirm(confirmTarget.order_id, expireAt)}
+        />
+      )}
     </motion.div>
+  );
+}
+
+function ConfirmOrderModal({
+  order,
+  busy,
+  onCancel,
+  onSubmit,
+}: {
+  order: Order;
+  busy: boolean;
+  onCancel: () => void;
+  onSubmit: (expireAt: string) => void;
+}) {
+  // Default expiry = last day of current month (same rule as backend default).
+  const defaultExpiry = (() => {
+    const now = new Date();
+    const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${last.getFullYear()}-${pad(last.getMonth() + 1)}-${pad(last.getDate())}`;
+  })();
+  const today = (() => {
+    const n = new Date();
+    const pad = (x: number) => String(x).padStart(2, '0');
+    return `${n.getFullYear()}-${pad(n.getMonth() + 1)}-${pad(n.getDate())}`;
+  })();
+
+  const [expireAt, setExpireAt] = useState(defaultExpiry);
+
+  const setRelative = (days: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    const pad = (x: number) => String(x).padStart(2, '0');
+    setExpireAt(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
+  };
+
+  const setEndOfMonth = (monthsAhead: number) => {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth() + monthsAhead + 1, 0);
+    const pad = (x: number) => String(x).padStart(2, '0');
+    setExpireAt(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
+  };
+
+  const invalid = !expireAt || expireAt < today;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={busy ? undefined : onCancel}
+    >
+      <div
+        className="bg-surface-container-lowest rounded-3xl shadow-xl max-w-md w-full p-6 md:p-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-lg font-bold font-headline">確認收款</h3>
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="text-on-surface-variant hover:text-on-surface disabled:opacity-50"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="rounded-2xl bg-surface-container p-4 mb-5 text-sm space-y-1">
+          <p className="font-semibold">
+            {order.user_name || order.user_email}
+            <span className="text-on-surface-variant font-normal ml-2">
+              ({order.user_email})
+            </span>
+          </p>
+          <p className="text-on-surface-variant">
+            訂單編號：<span className="font-mono">#{order.order_id}</span>
+          </p>
+          <p className="text-on-surface-variant">
+            本次加購：<strong className="text-primary">{order.quantity} 堂</strong>　/　
+            應收：<strong className="text-primary">NT$ {order.total.toLocaleString()}</strong>
+          </p>
+        </div>
+
+        <label className="block text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-2">
+          堂數有效期限
+        </label>
+        <input
+          type="date"
+          value={expireAt}
+          min={today}
+          onChange={(e) => setExpireAt(e.target.value)}
+          disabled={busy}
+          className="w-full px-4 py-3 rounded-xl border border-outline-variant bg-surface focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+        />
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <QuickDateBtn label="本月底" onClick={() => setEndOfMonth(0)} disabled={busy} />
+          <QuickDateBtn label="下月底" onClick={() => setEndOfMonth(1)} disabled={busy} />
+          <QuickDateBtn label="+ 30 天" onClick={() => setRelative(30)} disabled={busy} />
+          <QuickDateBtn label="+ 60 天" onClick={() => setRelative(60)} disabled={busy} />
+          <QuickDateBtn label="+ 90 天" onClick={() => setRelative(90)} disabled={busy} />
+        </div>
+
+        <p className="mt-4 text-xs text-on-surface-variant leading-relaxed">
+          會員若已有未過期的堂數，系統會自動將所有堂數的到期日統一為較晚的日期，避免被提早失效。
+        </p>
+
+        <div className="mt-6 flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="px-5 py-2.5 rounded-full text-sm font-medium text-on-surface hover:bg-surface-container disabled:opacity-50"
+          >
+            取消
+          </button>
+          <button
+            onClick={() => onSubmit(expireAt)}
+            disabled={busy || invalid}
+            className="px-5 py-2.5 rounded-full bg-primary text-on-primary font-semibold text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+          >
+            {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+            <CheckCircle2 className="w-4 h-4" />
+            確認收款
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QuickDateBtn({
+  label,
+  onClick,
+  disabled,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="px-3 py-1.5 rounded-full bg-surface-container text-xs font-medium text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface disabled:opacity-50"
+    >
+      {label}
+    </button>
   );
 }
 

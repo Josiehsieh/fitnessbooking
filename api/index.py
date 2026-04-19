@@ -1482,10 +1482,30 @@ def admin_list_orders():
 
 @app.route("/api/admin/orders/<order_id>/confirm", methods=["POST"])
 def admin_confirm_order(order_id):
-    """確認訂單付款：訂單狀態 → paid，並將堂數加到使用者帳戶（含到期日）。"""
+    """確認訂單付款：訂單狀態 → paid，並將堂數加到使用者帳戶（含到期日）。
+
+    Optional JSON body:
+        credits_expire_at:  ISO date (YYYY-MM-DD) override for this batch's
+                            expiry. If omitted, defaults to last day of the
+                            current month. If the user already has unexpired
+                            credits, the final expiry will be max(override,
+                            existing) so their other credits don't get cut short.
+    """
     admin, _ = _admin_required()
     if not admin:
         return jsonify({"error": "需要管理員權限"}), 403
+
+    data = request.get_json(silent=True) or {}
+    override_expiry_raw = str(data.get("credits_expire_at", "") or "").strip()
+    override_expiry: str | None = None
+    if override_expiry_raw:
+        try:
+            d = datetime.date.fromisoformat(override_expiry_raw)
+            if d < datetime.date.today():
+                return jsonify({"error": "有效期限不能早於今天"}), 400
+            override_expiry = d.isoformat()
+        except ValueError:
+            return jsonify({"error": "有效期限格式錯誤，請使用 YYYY-MM-DD"}), 400
 
     try:
         ws = _ensure_orders_sheet()
@@ -1510,7 +1530,9 @@ def admin_confirm_order(order_id):
                 return jsonify({"error": "找不到訂單對應的使用者"}), 404
 
             quantity = int(o.get("quantity", 0) or 0)
-            new_expiry = _last_day_of_month()
+            # Expiry for this batch: admin override takes priority, otherwise
+            # fall back to the default (last day of current month).
+            new_expiry = override_expiry or _last_day_of_month()
 
             current_credits = int(target_user.get("credits", 0) or 0)
             if _credits_expired(target_user):
