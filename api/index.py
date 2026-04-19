@@ -1445,6 +1445,118 @@ def admin_delete_class(class_id):
         return jsonify({"error": str(e)}), 500
 
 
+# Classes sheet columns (1-based):
+# 1 class_id | 2 date | 3 time | 4 duration | 5 name | 6 price
+# 7 total_spots | 8 booked_spots | 9 day_label
+_CLASS_COL = {
+    "class_id": 1, "date": 2, "time": 3, "duration": 4, "name": 5,
+    "price": 6, "total_spots": 7, "booked_spots": 8, "day_label": 9,
+}
+
+
+@app.route("/api/admin/classes/<class_id>", methods=["PATCH"])
+def admin_update_class(class_id):
+    """編輯課程：可更新 date / time / name / duration / price / total_spots。
+    其他未提供的欄位保持不變。total_spots 不可低於目前已預約人數。"""
+    admin, _ = _admin_required()
+    if not admin:
+        return jsonify({"error": "需要管理員權限"}), 403
+
+    data = request.get_json(silent=True) or {}
+    if not data:
+        return jsonify({"error": "沒有要更新的欄位"}), 400
+
+    try:
+        ws = _ws("Classes")
+        classes = ws.get_all_records()
+        target = None
+        row = None
+        for i, c in enumerate(classes):
+            if str(c.get("class_id")) == str(class_id):
+                target = c
+                row = i + 2  # header row is 1
+                break
+        if target is None:
+            return jsonify({"error": "找不到課程"}), 404
+
+        updates: list[tuple[int, object]] = []  # (col_index, value)
+
+        new_date = str(target.get("date", ""))
+        date_changed = False
+        if "date" in data:
+            raw = str(data["date"] or "").strip()
+            try:
+                d = datetime.date.fromisoformat(raw)
+            except ValueError:
+                return jsonify({"error": "日期格式錯誤，請使用 YYYY-MM-DD"}), 400
+            if raw != new_date:
+                new_date = raw
+                date_changed = True
+                updates.append((_CLASS_COL["date"], raw))
+
+        if "time" in data:
+            t = str(data["time"] or "").strip()
+            if not re.match(r"^\d{2}:\d{2}$", t):
+                return jsonify({"error": "時間格式錯誤，請使用 HH:MM"}), 400
+            updates.append((_CLASS_COL["time"], t))
+
+        if "name" in data:
+            name = str(data["name"] or "").strip()
+            if not name:
+                return jsonify({"error": "課程名稱不可為空"}), 400
+            updates.append((_CLASS_COL["name"], name))
+
+        if "duration" in data:
+            try:
+                duration = int(data["duration"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "時長必須是整數"}), 400
+            if duration <= 0:
+                return jsonify({"error": "時長必須大於 0"}), 400
+            updates.append((_CLASS_COL["duration"], duration))
+
+        if "price" in data:
+            try:
+                price = int(data["price"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "價格必須是整數"}), 400
+            if price < 0:
+                return jsonify({"error": "價格不可為負數"}), 400
+            updates.append((_CLASS_COL["price"], price))
+
+        if "total_spots" in data:
+            try:
+                spots = int(data["total_spots"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "名額必須是整數"}), 400
+            booked = int(target.get("booked_spots", 0) or 0)
+            if spots < booked:
+                return jsonify({
+                    "error": f"名額不可低於目前已預約人數（{booked}）"
+                }), 400
+            if spots <= 0:
+                return jsonify({"error": "名額必須大於 0"}), 400
+            updates.append((_CLASS_COL["total_spots"], spots))
+
+        # Recompute day_label if the date changed.
+        if date_changed:
+            date_obj = datetime.date.fromisoformat(new_date)
+            day_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+            day_label = f"{date_obj.month}月{date_obj.day}日 {day_names[date_obj.weekday()]}"
+            updates.append((_CLASS_COL["day_label"], day_label))
+
+        if not updates:
+            return jsonify({"message": "沒有變更"})
+
+        for col, val in updates:
+            ws.update_cell(row, col, val)
+        _invalidate_cache("Classes")
+
+        return jsonify({"message": "課程已更新", "updated_fields": len(updates)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/admin/bookings", methods=["GET"])
 def admin_list_bookings():
     admin, _ = _admin_required()

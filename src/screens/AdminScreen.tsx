@@ -8,6 +8,7 @@ import {
   Loader2,
   Plus,
   Trash2,
+  Pencil,
   TrendingUp,
   DollarSign,
   UserCheck,
@@ -408,6 +409,7 @@ function ClassesTab() {
     time: string;
     name: string;
     duration: number;
+    price: number;
     total_spots: number;
     booked_spots: number;
     day_label: string;
@@ -415,11 +417,13 @@ function ClassesTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({
     date: '',
     time: '19:00',
     name: 'U-Bound 彈跳床課程',
     duration: 60,
+    price: 800,
     total_spots: 10,
   });
   const [submitting, setSubmitting] = useState(false);
@@ -442,7 +446,42 @@ function ClassesTab() {
     reload();
   }, []);
 
-  const handleCreate = async (e: React.FormEvent) => {
+  const resetForm = () => {
+    setForm({
+      date: '',
+      time: '19:00',
+      name: 'U-Bound 彈跳床課程',
+      duration: 60,
+      price: 800,
+      total_spots: 10,
+    });
+  };
+
+  const openCreate = () => {
+    resetForm();
+    setEditingId(null);
+    setShowForm(true);
+  };
+
+  const openEdit = (c: typeof classes[number]) => {
+    setForm({
+      date: c.date,
+      time: c.time,
+      name: c.name,
+      duration: c.duration,
+      price: c.price ?? 0,
+      total_spots: c.total_spots,
+    });
+    setEditingId(c.class_id);
+    setShowForm(true);
+  };
+
+  const closeForm = () => {
+    setShowForm(false);
+    setEditingId(null);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.date || !form.time || !form.name) {
       alert('請完整填寫');
@@ -450,9 +489,18 @@ function ClassesTab() {
     }
     setSubmitting(true);
     try {
-      await api.admin.createClass(form);
-      setShowForm(false);
-      setForm({ ...form, date: '' });
+      if (editingId) {
+        const target = classes.find((c) => c.class_id === editingId);
+        if (target && form.total_spots < target.booked_spots) {
+          alert(`名額不可低於目前已預約人數（${target.booked_spots}）`);
+          setSubmitting(false);
+          return;
+        }
+        await api.admin.updateClass(editingId, form);
+      } else {
+        await api.admin.createClass(form);
+      }
+      closeForm();
       reload();
     } catch (err) {
       alert((err as Error).message);
@@ -530,11 +578,11 @@ function ClassesTab() {
     <div className="space-y-4">
       <div className="flex justify-end">
         <button
-          onClick={() => setShowForm(!showForm)}
+          onClick={() => (showForm ? closeForm() : openCreate())}
           className="flex items-center gap-2 px-4 py-2 rounded-full bg-primary text-on-primary font-medium"
         >
           <Plus className="w-4 h-4" />
-          新增課程
+          {showForm ? '取消' : '新增課程'}
         </button>
       </div>
 
@@ -618,9 +666,13 @@ function ClassesTab() {
         <motion.form
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
-          onSubmit={handleCreate}
+          onSubmit={handleSubmit}
           className="rounded-2xl bg-surface-container p-6 space-y-4"
         >
+          <div className="flex items-center gap-2 text-sm font-bold text-on-surface-variant uppercase tracking-wider">
+            {editingId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+            {editingId ? '編輯課程' : '新增課程'}
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <FormField label="日期">
               <input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className={inputCls} />
@@ -634,17 +686,29 @@ function ClassesTab() {
             <FormField label="時長（分鐘）">
               <input type="number" value={form.duration} onChange={(e) => setForm({ ...form, duration: parseInt(e.target.value) || 60 })} className={inputCls} />
             </FormField>
+            <FormField label="單堂價格（NT$）">
+              <input type="number" value={form.price} onChange={(e) => setForm({ ...form, price: parseInt(e.target.value) || 0 })} className={inputCls} />
+            </FormField>
             <FormField label="總名額">
               <input type="number" value={form.total_spots} onChange={(e) => setForm({ ...form, total_spots: parseInt(e.target.value) || 10 })} className={inputCls} />
             </FormField>
           </div>
+          {editingId && (() => {
+            const target = classes.find((c) => c.class_id === editingId);
+            if (!target || target.booked_spots === 0) return null;
+            return (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                目前已有 <strong>{target.booked_spots}</strong> 人預約這堂課，名額不得低於此數字。
+              </p>
+            );
+          })()}
           <div className="flex gap-2 justify-end">
-            <button type="button" onClick={() => setShowForm(false)} className="px-4 py-2 rounded-full bg-surface-container-high">
+            <button type="button" onClick={closeForm} className="px-4 py-2 rounded-full bg-surface-container-high">
               取消
             </button>
             <button type="submit" disabled={submitting} className="px-6 py-2 rounded-full bg-primary text-on-primary font-medium flex items-center gap-2 disabled:opacity-60">
               {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
-              建立課程
+              {editingId ? '儲存變更' : '建立課程'}
             </button>
           </div>
         </motion.form>
@@ -688,12 +752,22 @@ function ClassesTab() {
                       <span className="text-on-surface-variant"> / {c.total_spots}</span>
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <button
-                        onClick={() => handleDelete(c.class_id)}
-                        className="p-2 rounded-full hover:bg-error hover:text-on-error"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          onClick={() => openEdit(c)}
+                          className="p-2 rounded-full hover:bg-primary/10 hover:text-primary transition-colors"
+                          title="編輯課程"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(c.class_id)}
+                          className="p-2 rounded-full hover:bg-error hover:text-on-error transition-colors"
+                          title="刪除課程"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

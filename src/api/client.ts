@@ -318,6 +318,25 @@ export const api = {
         body: JSON.stringify(payload),
       }),
 
+    updateClass: (
+      classId: string,
+      payload: Partial<{
+        date: string;
+        time: string;
+        name: string;
+        duration: number;
+        price: number;
+        total_spots: number;
+      }>,
+    ) =>
+      apiFetch<{ message: string; updated_fields?: number }>(
+        `/api/admin/classes/${classId}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        },
+      ),
+
     deleteClass: (classId: string) =>
       apiFetch<{ message: string }>(`/api/admin/classes/${classId}`, {
         method: "DELETE",
