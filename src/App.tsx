@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { AnimatePresence } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
+import { AlertCircle, X } from 'lucide-react';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import LoginScreen from './screens/LoginScreen';
@@ -33,6 +34,7 @@ export default function App() {
   const [bookingResult, setBookingResult] = useState<BookingResult | null>(null);
   const [pendingOrder, setPendingOrder] = useState<Order | null>(null);
   const [paymentInfo, setPaymentInfo] = useState<PaymentInfo | null>(null);
+  const [oauthErrorMsg, setOauthErrorMsg] = useState<string>('');
 
   const isLoggedIn = user !== null;
 
@@ -45,17 +47,23 @@ export default function App() {
 
     if (oauthToken && oauthUserB64) {
       try {
-        const parsed = JSON.parse(atob(decodeURIComponent(oauthUserB64)));
+        const decoded = decodeURIComponent(oauthUserB64);
+        // Base64 may include +/= characters; atob handles standard base64 only.
+        const parsed = JSON.parse(atob(decoded));
         setUser(parsed);
         saveToken(oauthToken);
         window.history.replaceState({}, '', '/');
         setCurrentScreen('dashboard');
-      } catch {
-        // Malformed base64 – ignore
+      } catch (e) {
+        window.history.replaceState({}, '', '/');
+        setOauthErrorMsg(
+          `登入資料解析失敗：${e instanceof Error ? e.message : String(e)}`,
+        );
+        setCurrentScreen('login');
       }
     } else if (oauthError) {
       window.history.replaceState({}, '', '/');
-      // Could surface this in a toast; for now just return to login
+      setOauthErrorMsg(oauthError);
       setCurrentScreen('login');
     }
   }, []);
@@ -100,6 +108,27 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col">
+      {oauthErrorMsg && (
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] bg-error text-on-error shadow-xl rounded-2xl px-5 py-4 flex items-start gap-3 max-w-lg w-[92%]"
+        >
+          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+          <div className="flex-1 text-sm">
+            <p className="font-bold mb-0.5">登入失敗</p>
+            <p className="opacity-90 break-words">{oauthErrorMsg}</p>
+          </div>
+          <button
+            onClick={() => setOauthErrorMsg('')}
+            className="opacity-70 hover:opacity-100"
+            aria-label="關閉"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </motion.div>
+      )}
+
       {currentScreen !== 'line-login' && currentScreen !== 'google-login' && (
         <Navbar
           currentScreen={currentScreen}
