@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { Sparkles, ArrowRight, CalendarDays, Rocket, Loader2, LogOut, Receipt, Clock, AlertCircle, CheckCircle2, XCircle, User as UserIcon, Lock, Save, ChevronDown, ChevronUp, Bell, Mail, MessageSquare, RefreshCw } from 'lucide-react';
+import { Sparkles, ArrowRight, CalendarDays, Rocket, Loader2, LogOut, Receipt, Clock, AlertCircle, CheckCircle2, XCircle, User as UserIcon, Lock, Save, ChevronDown, ChevronUp, Bell, Mail, MessageSquare, RefreshCw, History } from 'lucide-react';
 import { Screen } from '../App';
 import { api, Booking, User, Order, NotificationPrefs, clearGetCache } from '../api/client';
 
@@ -44,6 +44,12 @@ function canCancel(dt: string): boolean {
   return hoursUntil >= 6;
 }
 
+function isPastClass(dt: string): boolean {
+  const d = parseClassDatetime(dt);
+  if (!d) return false;
+  return d.getTime() < Date.now();
+}
+
 function formatExpireNotice(expire?: string): { text: string; urgent: boolean } | null {
   if (!expire) return null;
   const d = new Date(expire);
@@ -64,11 +70,21 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const lastRefreshRef = useRef(0);
 
   const credits = user?.credits ?? 0;
   const expireNotice = formatExpireNotice(user?.credits_expire_at);
   const hasPendingOrder = orders.some((o) => o.status === 'pending');
+
+  // Upcoming = class hasn't started yet; History = class_datetime is in the past.
+  // Both lists are sorted chronologically (soonest first / most recent first).
+  const upcomingBookings = bookings
+    .filter((b) => !isPastClass(b.class_datetime))
+    .sort((a, b) => a.class_datetime.localeCompare(b.class_datetime));
+  const pastBookings = bookings
+    .filter((b) => isPastClass(b.class_datetime))
+    .sort((a, b) => b.class_datetime.localeCompare(a.class_datetime));
 
   // Refetch bookings + orders + fresh user (credits may have been topped up by admin).
   const refresh = useCallback(
@@ -258,7 +274,7 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
           <div className="bg-secondary-container/40 p-8 md:p-10 rounded-3xl relative overflow-hidden group">
             <div className="relative z-10">
               <h4 className="text-xl font-bold font-headline text-on-secondary-container mb-3">
-                {bookings.length > 0 ? `已預約 ${bookings.length} 堂課` : '還沒有預約課程'}
+                {upcomingBookings.length > 0 ? `已預約 ${upcomingBookings.length} 堂課` : '還沒有預約課程'}
               </h4>
               <p className="text-on-secondary-container/80 text-sm leading-relaxed mb-8 font-medium">
                 「力量並非源自體力，而是源自不屈不撓的意志。」
@@ -298,9 +314,9 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
               </div>
             )}
 
-            {!loading && !error && bookings.length === 0 && (
+            {!loading && !error && upcomingBookings.length === 0 && (
               <div className="text-center py-16 bg-surface-container-low rounded-3xl">
-                <p className="text-on-surface-variant font-medium">尚無預約課程</p>
+                <p className="text-on-surface-variant font-medium">尚無即將到來的課程</p>
                 <button
                   onClick={() => onNavigate('schedule')}
                   className="mt-4 bg-primary text-on-primary px-6 py-2.5 rounded-full font-bold text-sm"
@@ -311,57 +327,50 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
             )}
 
             <div className="space-y-4">
-              {bookings.map((booking) => {
-                const cancellable = canCancel(booking.class_datetime);
-                return (
-                  <div
-                    key={booking.booking_id}
-                    className="bg-surface-container-lowest p-2 rounded-3xl shadow-sm hover:shadow-md transition-shadow duration-300 border border-outline-variant/10"
-                  >
-                    <div className="flex flex-col md:flex-row items-center gap-6 p-4 md:p-6">
-                      <div className="w-24 h-24 rounded-2xl overflow-hidden shrink-0">
-                        <img
-                          src={getImage(booking.class_name)}
-                          alt={booking.class_name}
-                          className="w-full h-full object-cover"
-                        />
-                      </div>
-                      <div className="flex-grow text-center md:text-left">
-                        <div className="flex flex-wrap justify-center md:justify-start gap-2 mb-3">
-                          <span className="bg-primary-container text-on-primary-container px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
-                            已確認
-                          </span>
-                          {!cancellable && (
-                            <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
-                              6 小時內
-                            </span>
-                          )}
-                        </div>
-                        <h3 className="text-xl font-bold font-headline mb-2">{booking.class_name}</h3>
-                        <p className="text-on-surface-variant text-sm flex items-center justify-center md:justify-start gap-2 font-medium">
-                          <CalendarDays className="w-4 h-4" />
-                          {formatDatetime(booking.class_datetime)}
-                        </p>
-                      </div>
-                      <div className="shrink-0 w-full md:w-auto mt-4 md:mt-0">
-                        <button
-                          onClick={() => handleCancel(booking.booking_id)}
-                          disabled={cancellingId === booking.booking_id || !cancellable}
-                          title={!cancellable ? '課程開始前 6 小時內無法取消' : ''}
-                          className="w-full md:w-auto px-6 py-3 rounded-full border border-error/30 text-error font-headline font-bold text-sm hover:bg-error/5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                        >
-                          {cancellingId === booking.booking_id ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : null}
-                          取消課程
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+              {upcomingBookings.map((booking) => (
+                <BookingCard
+                  key={booking.booking_id}
+                  booking={booking}
+                  past={false}
+                  cancelling={cancellingId === booking.booking_id}
+                  onCancel={() => handleCancel(booking.booking_id)}
+                />
+              ))}
             </div>
           </section>
+
+          {/* History */}
+          {pastBookings.length > 0 && (
+            <section>
+              <button
+                onClick={() => setHistoryOpen((v) => !v)}
+                className="w-full flex justify-between items-center mb-4 px-2 group"
+              >
+                <div className="flex items-center gap-2">
+                  <History className="w-5 h-5 text-on-surface-variant" />
+                  <h2 className="text-xl font-bold font-headline text-on-surface-variant group-hover:text-on-surface transition-colors">
+                    歷史紀錄
+                  </h2>
+                  <span className="text-xs font-medium text-outline bg-surface-container px-2 py-0.5 rounded-full">
+                    {pastBookings.length}
+                  </span>
+                </div>
+                {historyOpen ? (
+                  <ChevronUp className="w-4 h-4 text-on-surface-variant" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 text-on-surface-variant" />
+                )}
+              </button>
+
+              {historyOpen && (
+                <div className="space-y-3">
+                  {pastBookings.map((booking) => (
+                    <BookingCard key={booking.booking_id} booking={booking} past />
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
           {/* CTA */}
           <div className="bg-gradient-to-r from-primary-container/30 to-tertiary-container/30 p-1 rounded-[2.5rem] mt-4">
@@ -392,6 +401,84 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
     </motion.div>
   );
 }
+
+interface BookingCardProps {
+  booking: Booking;
+  past: boolean;
+  cancelling?: boolean;
+  onCancel?: () => void;
+}
+
+function BookingCard({ booking, past, cancelling, onCancel }: BookingCardProps) {
+  const cancellable = !past && canCancel(booking.class_datetime);
+
+  if (past) {
+    return (
+      <div className="bg-surface-container-low/60 rounded-2xl border border-outline-variant/10 opacity-80 hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-4 p-4">
+          <div className="w-14 h-14 rounded-xl overflow-hidden shrink-0 grayscale">
+            <img
+              src={getImage(booking.class_name)}
+              alt={booking.class_name}
+              className="w-full h-full object-cover"
+            />
+          </div>
+          <div className="flex-grow min-w-0">
+            <h4 className="text-base font-bold font-headline text-on-surface-variant truncate">
+              {booking.class_name}
+            </h4>
+            <p className="text-xs text-outline flex items-center gap-1.5 mt-1 font-medium">
+              <CalendarDays className="w-3.5 h-3.5" />
+              {formatDatetime(booking.class_datetime)}
+            </p>
+          </div>
+          <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider bg-surface-container text-on-surface-variant px-2.5 py-1 rounded-full">
+            已完成
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-surface-container-lowest p-2 rounded-3xl shadow-sm hover:shadow-md transition-shadow duration-300 border border-outline-variant/10">
+      <div className="flex flex-col md:flex-row items-center gap-6 p-4 md:p-6">
+        <div className="w-24 h-24 rounded-2xl overflow-hidden shrink-0">
+          <img src={getImage(booking.class_name)} alt={booking.class_name} className="w-full h-full object-cover" />
+        </div>
+        <div className="flex-grow text-center md:text-left">
+          <div className="flex flex-wrap justify-center md:justify-start gap-2 mb-3">
+            <span className="bg-primary-container text-on-primary-container px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
+              已確認
+            </span>
+            {!cancellable && (
+              <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
+                6 小時內
+              </span>
+            )}
+          </div>
+          <h3 className="text-xl font-bold font-headline mb-2">{booking.class_name}</h3>
+          <p className="text-on-surface-variant text-sm flex items-center justify-center md:justify-start gap-2 font-medium">
+            <CalendarDays className="w-4 h-4" />
+            {formatDatetime(booking.class_datetime)}
+          </p>
+        </div>
+        <div className="shrink-0 w-full md:w-auto mt-4 md:mt-0">
+          <button
+            onClick={onCancel}
+            disabled={cancelling || !cancellable}
+            title={!cancellable ? '課程開始前 6 小時內無法取消' : ''}
+            className="w-full md:w-auto px-6 py-3 rounded-full border border-error/30 text-error font-headline font-bold text-sm hover:bg-error/5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {cancelling ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+            取消課程
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function ProfileCard({ user, onUserUpdated }: { user: User; onUserUpdated: (u: User) => void }) {
   const [open, setOpen] = useState(false);
