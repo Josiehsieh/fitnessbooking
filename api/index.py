@@ -84,16 +84,33 @@ def _get_gc():
     return gspread.authorize(creds)
 
 
+# Cache the Spreadsheet + Worksheet handles at module level. gspread fetches
+# sheet metadata (another Sheets API read!) every time you call
+# `.worksheet(name)` on a fresh Spreadsheet, so without this cache every
+# admin action paid an extra read just to look up the worksheet handle.
+_spreadsheet_handle = None
+_worksheet_handles: dict = {}
+
+
 def _get_spreadsheet():
+    global _spreadsheet_handle
+    if _spreadsheet_handle is not None:
+        return _spreadsheet_handle
     gc = _get_gc()
     spreadsheet_id = os.environ.get("SPREADSHEET_ID", "")
     if not spreadsheet_id:
         raise ValueError("環境變數 SPREADSHEET_ID 未設定")
-    return gc.open_by_key(spreadsheet_id)
+    _spreadsheet_handle = gc.open_by_key(spreadsheet_id)
+    return _spreadsheet_handle
 
 
 def _ws(sheet_name: str):
-    return _get_spreadsheet().worksheet(sheet_name)
+    ws = _worksheet_handles.get(sheet_name)
+    if ws is not None:
+        return ws
+    ws = _get_spreadsheet().worksheet(sheet_name)
+    _worksheet_handles[sheet_name] = ws
+    return ws
 
 
 def _hash(password: str) -> str:
@@ -188,6 +205,64 @@ def _invalidate_cache(*sheet_names: str):
         return
     for n in sheet_names:
         _sheet_cache.pop(n, None)
+
+
+# ── In-place cache mutations ──────────────────────────────────────────────────
+# We prefer patching the cache instead of invalidating it so that subsequent
+# reads don't have to refetch from Google Sheets. This matters a lot during
+# bursts of admin writes where otherwise each write would force a fresh read on
+# the NEXT request, quickly burning through the 60 reads/min quota.
+#
+# Tradeoff: other Vercel instances running this code have their own caches and
+# won't see our patch until their TTL expires. That's acceptable for this app
+# because writes are concentrated in one admin session.
+
+
+def _patch_cache_row(sheet_name: str, match, patches: dict) -> None:
+    """Apply `patches` to every cached row where `match(row) == True`.
+    Silently no-ops if the sheet hasn't been cached yet."""
+    hit = _sheet_cache.get(sheet_name)
+    if not hit:
+        return
+    _ts, data = hit
+    for i, row in enumerate(data):
+        if match(row):
+            merged = dict(row)
+            merged.update(patches)
+            data[i] = merged
+
+
+def _append_cache_row(sheet_name: str, row: dict) -> None:
+    """Append a row to the cache so the next read sees it without a refetch."""
+    hit = _sheet_cache.get(sheet_name)
+    if not hit:
+        return
+    _ts, data = hit
+    data.append(row)
+
+
+def _delete_cache_row(sheet_name: str, match) -> None:
+    """Remove every cached row where `match(row) == True`."""
+    hit = _sheet_cache.get(sheet_name)
+    if not hit:
+        return
+    _ts, data = hit
+    data[:] = [r for r in data if not match(r)]
+
+
+def _batch_write_cells(ws, cell_updates) -> None:
+    """Write multiple (row, col, value) updates in a SINGLE Sheets API call
+    using batch_update. `cell_updates` is an iterable of (row, col, value).
+    Using one batch call instead of N update_cell() calls saves N-1 write quota
+    units; just as importantly it also avoids N sequential HTTP round-trips."""
+    body = []
+    for row, col, val in cell_updates:
+        body.append({
+            "range": gspread.utils.rowcol_to_a1(row, col),
+            "values": [[val]],
+        })
+    if body:
+        ws.batch_update(body)
 
 
 def _get_user_by_token(token: str):
@@ -1380,12 +1455,20 @@ def admin_update_credits(user_id):
         for i, u in enumerate(users):
             if str(u.get("user_id")) == str(user_id):
                 row = i + 2
+                cell_updates: list = []
+                patch: dict = {}
                 if new_credits is not None:
-                    ws.update_cell(row, 5, new_credits)
+                    cell_updates.append((row, 5, new_credits))
+                    patch["credits"] = new_credits
                 if new_expire is not None:
-                    col = _users_expire_col()
-                    ws.update_cell(row, col, new_expire)
-                _invalidate_cache("Users")
+                    cell_updates.append((row, _users_expire_col(), new_expire))
+                    patch["credits_expire_at"] = new_expire
+                _batch_write_cells(ws, cell_updates)
+                _patch_cache_row(
+                    "Users",
+                    lambda r, uid=str(user_id): str(r.get("user_id")) == uid,
+                    patch,
+                )
                 return jsonify({
                     "message": "會員資料已更新",
                     "credits": new_credits if new_credits is not None else int(u.get("credits", 0) or 0),
@@ -1419,8 +1502,20 @@ def admin_create_class():
         day_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
         day_label = f"{date_obj.month}月{date_obj.day}日 {day_names[date_obj.weekday()]}"
 
-        _ws("Classes").append_row([class_id, date, time, duration, name, price, total_spots, 0, day_label])
-        _invalidate_cache("Classes")
+        _ws("Classes").append_row(
+            [class_id, date, time, duration, name, price, total_spots, 0, day_label]
+        )
+        _append_cache_row("Classes", {
+            "class_id": class_id,
+            "date": date,
+            "time": time,
+            "duration": duration,
+            "name": name,
+            "price": price,
+            "total_spots": total_spots,
+            "booked_spots": 0,
+            "day_label": day_label,
+        })
         return jsonify({"message": "課程已新增", "class_id": class_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1438,7 +1533,10 @@ def admin_delete_class(class_id):
         for i, c in enumerate(classes):
             if str(c.get("class_id")) == str(class_id):
                 ws.delete_rows(i + 2)
-                _invalidate_cache("Classes")
+                _delete_cache_row(
+                    "Classes",
+                    lambda r, cid=str(class_id): str(r.get("class_id")) == cid,
+                )
                 return jsonify({"message": "課程已刪除"})
         return jsonify({"error": "找不到課程"}), 404
     except Exception as e:
@@ -1468,7 +1566,10 @@ def admin_update_class(class_id):
 
     try:
         ws = _ws("Classes")
-        classes = ws.get_all_records()
+        # Use the cached records to locate the row we want to update. This
+        # avoids a full sheet read on every admin edit, which was the main
+        # contributor to the 429 quota errors during bulk edits.
+        classes = _cached_records("Classes")
         target = None
         row = None
         for i, c in enumerate(classes):
@@ -1479,32 +1580,34 @@ def admin_update_class(class_id):
         if target is None:
             return jsonify({"error": "找不到課程"}), 404
 
-        updates: list[tuple[int, object]] = []  # (col_index, value)
+        # (field_name, col_index, value) — keep both so we can write to Sheets
+        # AND patch the cache with the same data afterwards.
+        updates: list[tuple[str, int, object]] = []
 
         new_date = str(target.get("date", ""))
         date_changed = False
         if "date" in data:
             raw = str(data["date"] or "").strip()
             try:
-                d = datetime.date.fromisoformat(raw)
+                datetime.date.fromisoformat(raw)
             except ValueError:
                 return jsonify({"error": "日期格式錯誤，請使用 YYYY-MM-DD"}), 400
             if raw != new_date:
                 new_date = raw
                 date_changed = True
-                updates.append((_CLASS_COL["date"], raw))
+                updates.append(("date", _CLASS_COL["date"], raw))
 
         if "time" in data:
             t = str(data["time"] or "").strip()
             if not re.match(r"^\d{2}:\d{2}$", t):
                 return jsonify({"error": "時間格式錯誤，請使用 HH:MM"}), 400
-            updates.append((_CLASS_COL["time"], t))
+            updates.append(("time", _CLASS_COL["time"], t))
 
         if "name" in data:
             name = str(data["name"] or "").strip()
             if not name:
                 return jsonify({"error": "課程名稱不可為空"}), 400
-            updates.append((_CLASS_COL["name"], name))
+            updates.append(("name", _CLASS_COL["name"], name))
 
         if "duration" in data:
             try:
@@ -1513,7 +1616,7 @@ def admin_update_class(class_id):
                 return jsonify({"error": "時長必須是整數"}), 400
             if duration <= 0:
                 return jsonify({"error": "時長必須大於 0"}), 400
-            updates.append((_CLASS_COL["duration"], duration))
+            updates.append(("duration", _CLASS_COL["duration"], duration))
 
         if "price" in data:
             try:
@@ -1522,7 +1625,7 @@ def admin_update_class(class_id):
                 return jsonify({"error": "價格必須是整數"}), 400
             if price < 0:
                 return jsonify({"error": "價格不可為負數"}), 400
-            updates.append((_CLASS_COL["price"], price))
+            updates.append(("price", _CLASS_COL["price"], price))
 
         if "total_spots" in data:
             try:
@@ -1536,21 +1639,28 @@ def admin_update_class(class_id):
                 }), 400
             if spots <= 0:
                 return jsonify({"error": "名額必須大於 0"}), 400
-            updates.append((_CLASS_COL["total_spots"], spots))
+            updates.append(("total_spots", _CLASS_COL["total_spots"], spots))
 
         # Recompute day_label if the date changed.
         if date_changed:
             date_obj = datetime.date.fromisoformat(new_date)
             day_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
             day_label = f"{date_obj.month}月{date_obj.day}日 {day_names[date_obj.weekday()]}"
-            updates.append((_CLASS_COL["day_label"], day_label))
+            updates.append(("day_label", _CLASS_COL["day_label"], day_label))
 
         if not updates:
             return jsonify({"message": "沒有變更"})
 
-        for col, val in updates:
-            ws.update_cell(row, col, val)
-        _invalidate_cache("Classes")
+        # One HTTP round-trip for all changed cells.
+        _batch_write_cells(ws, [(row, col, val) for (_, col, val) in updates])
+
+        # Patch the cache in-place so we don't need a fresh read on the next
+        # request.
+        _patch_cache_row(
+            "Classes",
+            lambda c: str(c.get("class_id")) == str(class_id),
+            {field: val for (field, _, val) in updates},
+        )
 
         return jsonify({"message": "課程已更新", "updated_fields": len(updates)})
     except Exception as e:
@@ -1621,7 +1731,10 @@ def admin_confirm_order(order_id):
 
     try:
         ws = _ensure_orders_sheet()
-        orders = ws.get_all_records()
+        # Use the cache to locate the order and the user. Writes below keep
+        # the cache consistent via _patch_cache_row, so we don't pay for a
+        # fresh read on every confirmation.
+        orders = _cached_records("Orders")
         for i, o in enumerate(orders):
             if str(o.get("order_id")) != str(order_id):
                 continue
@@ -1630,7 +1743,7 @@ def admin_confirm_order(order_id):
                 return jsonify({"error": f"此訂單狀態為 {o.get('status')}，無法重複確認"}), 400
 
             users_ws = _ws("Users")
-            users = users_ws.get_all_records()
+            users = _cached_records("Users")
             target_user = None
             user_row = None
             for j, u in enumerate(users):
@@ -1664,14 +1777,32 @@ def admin_confirm_order(order_id):
             else:
                 final_expiry = new_expiry
 
-            users_ws.update_cell(user_row, 5, new_credits)
             expire_col = _users_expire_col()
-            users_ws.update_cell(user_row, expire_col, final_expiry)
-
+            # Single batched write for both the user row updates (credits +
+            # expire date) and the order row updates (status + paid_at).
             now = datetime.datetime.now().isoformat()
-            ws.update_cell(i + 2, ORDER_COL["status"], "paid")
-            ws.update_cell(i + 2, ORDER_COL["paid_at"], now)
-            _invalidate_cache("Users", "Orders")
+            user_target_uid = str(target_user.get("user_id"))
+            order_row = i + 2
+            _batch_write_cells(users_ws, [
+                (user_row, 5, new_credits),
+                (user_row, expire_col, final_expiry),
+            ])
+            _batch_write_cells(ws, [
+                (order_row, ORDER_COL["status"], "paid"),
+                (order_row, ORDER_COL["paid_at"], now),
+            ])
+
+            # Patch caches in-place so subsequent reads don't refetch.
+            _patch_cache_row(
+                "Users",
+                lambda u, uid=user_target_uid: str(u.get("user_id")) == uid,
+                {"credits": new_credits, "credits_expire_at": final_expiry},
+            )
+            _patch_cache_row(
+                "Orders",
+                lambda r, oid=str(order_id): str(r.get("order_id")) == oid,
+                {"status": "paid", "paid_at": now},
+            )
 
             order_total = int(o.get("total", 0) or 0)
             _notify(
@@ -1710,10 +1841,18 @@ def admin_cancel_order(order_id):
             if str(o.get("order_id")) == str(order_id):
                 if str(o.get("status")) == "paid":
                     return jsonify({"error": "已付款的訂單無法取消，請手動處理"}), 400
-                ws.update_cell(i + 2, ORDER_COL["status"], "cancelled")
+                order_row = i + 2
+                cell_updates = [(order_row, ORDER_COL["status"], "cancelled")]
+                patch = {"status": "cancelled"}
                 if reason:
-                    ws.update_cell(i + 2, ORDER_COL["notes"], reason)
-                _invalidate_cache("Orders")
+                    cell_updates.append((order_row, ORDER_COL["notes"], reason))
+                    patch["notes"] = reason
+                _batch_write_cells(ws, cell_updates)
+                _patch_cache_row(
+                    "Orders",
+                    lambda r, oid=str(order_id): str(r.get("order_id")) == oid,
+                    patch,
+                )
 
                 # Look up user and notify
                 users = _cached_records("Users")
