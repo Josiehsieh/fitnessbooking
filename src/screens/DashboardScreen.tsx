@@ -117,12 +117,13 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
     };
   }, [refresh]);
 
-  // Poll every 20s while there is a pending order awaiting admin confirmation.
+  // Poll every 30s while there is a pending order awaiting admin confirmation.
+  // Matches the backend sheet cache TTL so most polls hit cache cheaply.
   useEffect(() => {
     if (!hasPendingOrder) return;
     const id = window.setInterval(() => {
       refresh({ force: true, silent: true });
-    }, 20000);
+    }, 30000);
     return () => window.clearInterval(id);
   }, [hasPendingOrder, refresh]);
 

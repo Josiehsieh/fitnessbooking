@@ -107,11 +107,31 @@ def _hash(password: str) -> str:
 import time as _time
 
 # Cache entries: { sheet_name: (timestamp, data) }
-# TTL is intentionally long (15 s) because:
-#  - Google Sheets free quota = 60 reads/min/user; admin browsing easily hits this
+# TTL is intentionally long because:
+#  - Google Sheets free quota = 60 reads/min/user (shared across all app users!)
 #  - Stale data is acceptable; writes invalidate the cache so real changes show up
+#  - Vercel runs multiple warm instances whose caches are independent, so the
+#    effective read rate can be (num_instances × sheets / TTL). We want this to
+#    stay comfortably under 60/min even with 3-4 warm instances.
 _sheet_cache: dict = {}
-_SHEET_TTL = 15.0
+_SHEET_TTL = 45.0
+# How long to keep serving stale data after a rate-limit hit before retrying.
+_RATE_LIMIT_COOLDOWN = 30.0
+
+# Per-sheet locks to prevent "thundering herd" — when N concurrent requests all
+# find an expired cache entry, only one of them should call the Sheets API; the
+# others wait on the lock and then use the freshly populated cache.
+_sheet_locks: dict = {}
+_locks_mutex = threading.Lock()
+
+
+def _lock_for(sheet_name: str) -> threading.Lock:
+    with _locks_mutex:
+        lk = _sheet_locks.get(sheet_name)
+        if lk is None:
+            lk = threading.Lock()
+            _sheet_locks[sheet_name] = lk
+        return lk
 
 
 def _cached_records(sheet_name: str):
@@ -119,31 +139,46 @@ def _cached_records(sheet_name: str):
 
     On quota-exceeded (429) errors we serve the previously cached data even if
     it is stale, so the UI keeps working instead of breaking on a hot quota.
+    Concurrent cache misses are coalesced via a per-sheet lock so we never
+    fire the same read multiple times in parallel.
     """
     now = _time.time()
     hit = _sheet_cache.get(sheet_name)
     if hit and now - hit[0] < _SHEET_TTL:
         return hit[1]
-    try:
-        if sheet_name == "Orders":
-            ws = _ensure_orders_sheet()
-        elif sheet_name == "Settings":
-            ws = _ensure_settings_sheet()
-        else:
-            ws = _ws(sheet_name)
-        data = ws.get_all_records()
-        _sheet_cache[sheet_name] = (now, data)
-        return data
-    except Exception as e:
-        # On rate-limit, fall back to last known data (even if expired).
-        # Better to show slightly stale data than to fail the whole request.
-        msg = str(e)
-        is_rate_limited = "429" in msg or "Quota exceeded" in msg or "RATE_LIMIT" in msg
-        if is_rate_limited and hit:
-            # Refresh timestamp so we don't hammer the API for the next 5 s
-            _sheet_cache[sheet_name] = (now - _SHEET_TTL + 5.0, hit[1])
+
+    lock = _lock_for(sheet_name)
+    with lock:
+        # Another thread may have refreshed the cache while we were waiting.
+        now = _time.time()
+        hit = _sheet_cache.get(sheet_name)
+        if hit and now - hit[0] < _SHEET_TTL:
             return hit[1]
-        raise
+        try:
+            if sheet_name == "Orders":
+                ws = _ensure_orders_sheet()
+            elif sheet_name == "Settings":
+                ws = _ensure_settings_sheet()
+            else:
+                ws = _ws(sheet_name)
+            data = ws.get_all_records()
+            _sheet_cache[sheet_name] = (now, data)
+            return data
+        except Exception as e:
+            # On rate-limit, fall back to last known data (even if expired).
+            # Better to show slightly stale data than to fail the whole request.
+            msg = str(e)
+            is_rate_limited = (
+                "429" in msg or "Quota exceeded" in msg or "RATE_LIMIT" in msg
+            )
+            if is_rate_limited and hit:
+                # Pause further fetches for RATE_LIMIT_COOLDOWN seconds by
+                # back-dating the timestamp so the cache stays "fresh" for that
+                # long, even though the data is actually stale.
+                fake_ts = now - _SHEET_TTL + _RATE_LIMIT_COOLDOWN
+                _sheet_cache[sheet_name] = (fake_ts, hit[1])
+                return hit[1]
+            raise
 
 
 def _invalidate_cache(*sheet_names: str):
@@ -227,12 +262,26 @@ def _ensure_orders_sheet():
     return _ensure_sheet("Orders", ORDERS_HEADERS)
 
 
+_settings_defaults_ensured = False
+
+
 def _ensure_settings_sheet():
     ws = _ensure_sheet("Settings", SETTINGS_HEADERS)
-    existing = {str(r.get("key", "")): True for r in ws.get_all_records()}
-    missing = [[k, v] for k, v in DEFAULT_SETTINGS.items() if k not in existing]
-    if missing:
-        ws.append_rows(missing)
+    # Only seed default rows once per process lifetime.  Re-reading the whole
+    # sheet on every cache miss wastes a Google Sheets read request, which is
+    # our scarcest resource (60 reads/min quota).
+    global _settings_defaults_ensured
+    if not _settings_defaults_ensured:
+        try:
+            existing = {str(r.get("key", "")): True for r in ws.get_all_records()}
+            missing = [[k, v] for k, v in DEFAULT_SETTINGS.items() if k not in existing]
+            if missing:
+                ws.append_rows(missing)
+        except Exception:
+            # If we hit a rate limit here, skip seeding – sheet is likely
+            # already populated, and we don't want to block normal operation.
+            pass
+        _settings_defaults_ensured = True
     return ws
 
 
