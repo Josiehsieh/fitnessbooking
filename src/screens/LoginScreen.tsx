@@ -1,12 +1,25 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { Mail, MessageCircle, Loader2 } from 'lucide-react';
+import { Mail, MessageCircle, Loader2, AlertTriangle, ExternalLink, Copy, Check } from 'lucide-react';
 import { Screen } from '../App';
 import { api, User } from '../api/client';
 
 interface LoginScreenProps {
   onLogin: (user: User, token: string) => void;
   onNavigate: (screen: Screen) => void;
+}
+
+type InAppBrowser = 'line' | 'facebook' | 'instagram' | 'other' | null;
+
+function detectInAppBrowser(): InAppBrowser {
+  if (typeof navigator === 'undefined') return null;
+  const ua = navigator.userAgent || '';
+  if (/Line\//i.test(ua)) return 'line';
+  if (/FBAN|FBAV/i.test(ua)) return 'facebook';
+  if (/Instagram/i.test(ua)) return 'instagram';
+  // Other known in-app browsers (WeChat, TikTok, etc.) - best-effort.
+  if (/MicroMessenger|WeChat|BytedanceWebview|TikTok|KAKAOTALK/i.test(ua)) return 'other';
+  return null;
 }
 
 export default function LoginScreen({ onLogin, onNavigate }: LoginScreenProps) {
@@ -16,6 +29,8 @@ export default function LoginScreen({ onLogin, onNavigate }: LoginScreenProps) {
   const [name, setName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const inAppBrowser = useMemo(detectInAppBrowser, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,6 +64,8 @@ export default function LoginScreen({ onLogin, onNavigate }: LoginScreenProps) {
         <div className="absolute -bottom-12 -right-12 w-40 h-40 bg-secondary-container rounded-full blur-3xl opacity-30"></div>
 
         <div className="relative bg-surface-container-lowest rounded-3xl p-8 md:p-10 shadow-[0_40px_80px_-15px_rgba(46,46,50,0.08)]">
+          {inAppBrowser && <InAppBrowserNotice which={inAppBrowser} />}
+
           <div className="text-center mb-10">
             <h1 className="font-headline text-4xl font-bold text-on-surface tracking-tight mb-3">
               {mode === 'login' ? '歡迎回來' : '立即加入'}
@@ -137,14 +154,18 @@ export default function LoginScreen({ onLogin, onNavigate }: LoginScreenProps) {
           <div className="flex flex-col gap-4">
             <button
               onClick={() => { window.location.href = '/api/auth/google'; }}
-              className="flex items-center justify-center gap-3 py-3.5 px-4 rounded-full bg-surface-container-low hover:bg-surface-container transition-colors font-medium text-on-surface"
+              disabled={!!inAppBrowser}
+              title={inAppBrowser ? '請先在外部瀏覽器開啟此頁面' : ''}
+              className="flex items-center justify-center gap-3 py-3.5 px-4 rounded-full bg-surface-container-low hover:bg-surface-container transition-colors font-medium text-on-surface disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Mail className="w-5 h-5" />
               使用 Google 帳號登入
             </button>
             <button
               onClick={() => { window.location.href = '/api/auth/line'; }}
-              className="flex items-center justify-center gap-3 py-3.5 px-4 rounded-full bg-surface-container-low hover:bg-surface-container transition-colors font-medium text-on-surface"
+              disabled={!!inAppBrowser}
+              title={inAppBrowser ? '請先在外部瀏覽器開啟此頁面' : ''}
+              className="flex items-center justify-center gap-3 py-3.5 px-4 rounded-full bg-surface-container-low hover:bg-surface-container transition-colors font-medium text-on-surface disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <MessageCircle className="w-5 h-5" />
               使用 LINE 帳號登入
@@ -177,5 +198,89 @@ export default function LoginScreen({ onLogin, onNavigate }: LoginScreenProps) {
         </div>
       </div>
     </motion.div>
+  );
+}
+
+function InAppBrowserNotice({ which }: { which: Exclude<InAppBrowser, null> }) {
+  const [copied, setCopied] = useState(false);
+
+  // Build the "open in external browser" URL. LINE's browser honours the
+  // ?openExternalBrowser=1 query param and will pop the link out into Safari
+  // / Chrome. Other in-app browsers don't have a standard equivalent, so we
+  // fall back to letting the user copy the link manually.
+  const fullUrl =
+    typeof window !== 'undefined' ? window.location.origin + window.location.pathname : '';
+
+  const lineExternalUrl = (() => {
+    if (!fullUrl) return '';
+    const sep = fullUrl.includes('?') ? '&' : '?';
+    return `${fullUrl}${sep}openExternalBrowser=1`;
+  })();
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(fullUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API can fail inside some in-app browsers; fall back to prompt.
+      window.prompt('請複製下方連結，並在外部瀏覽器（Safari / Chrome）貼上開啟：', fullUrl);
+    }
+  };
+
+  const labels: Record<Exclude<InAppBrowser, null>, string> = {
+    line: 'LINE 內建瀏覽器',
+    facebook: 'Facebook 內建瀏覽器',
+    instagram: 'Instagram 內建瀏覽器',
+    other: '應用程式內建瀏覽器',
+  };
+
+  return (
+    <div className="mb-8 rounded-2xl border border-amber-300/60 bg-amber-50 p-5 text-sm">
+      <div className="flex gap-3 items-start mb-3">
+        <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+        <div className="flex-1">
+          <p className="font-bold text-amber-900 mb-1">
+            偵測到您使用 {labels[which]}
+          </p>
+          <p className="text-amber-800/90 leading-relaxed">
+            Google 出於安全考量禁止在應用程式內建瀏覽器中完成登入。請改用外部瀏覽器（Safari / Chrome）開啟此頁面，再進行註冊或登入。
+          </p>
+        </div>
+      </div>
+
+      {which === 'line' && lineExternalUrl ? (
+        <a
+          href={lineExternalUrl}
+          className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-full bg-amber-600 hover:bg-amber-700 text-white font-semibold transition-colors"
+        >
+          <ExternalLink className="w-4 h-4" />
+          在外部瀏覽器開啟
+        </a>
+      ) : (
+        <button
+          onClick={handleCopy}
+          className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-full bg-amber-600 hover:bg-amber-700 text-white font-semibold transition-colors"
+        >
+          {copied ? (
+            <>
+              <Check className="w-4 h-4" />
+              已複製，請貼到瀏覽器
+            </>
+          ) : (
+            <>
+              <Copy className="w-4 h-4" />
+              複製網址
+            </>
+          )}
+        </button>
+      )}
+
+      {which === 'line' && (
+        <p className="mt-3 text-xs text-amber-800/80 leading-relaxed">
+          點擊上方按鈕會自動用 Safari / Chrome 開啟本站。若未自動跳出，請點右下角的「⋯」→「在其他瀏覽器開啟」。
+        </p>
+      )}
+    </div>
   );
 }
