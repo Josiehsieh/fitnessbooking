@@ -31,6 +31,8 @@ export default function LoginScreen({ onLogin, onNavigate }: LoginScreenProps) {
   const [loading, setLoading] = useState(false);
 
   const inAppBrowser = useMemo(detectInAppBrowser, []);
+  const disableGoogleOAuth = Boolean(inAppBrowser);
+  const disableLineOAuth = inAppBrowser !== null && inAppBrowser !== 'line';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -154,8 +156,8 @@ export default function LoginScreen({ onLogin, onNavigate }: LoginScreenProps) {
           <div className="flex flex-col gap-4">
             <button
               onClick={() => { window.location.href = '/api/auth/google'; }}
-              disabled={!!inAppBrowser}
-              title={inAppBrowser ? '請先在外部瀏覽器開啟此頁面' : ''}
+              disabled={disableGoogleOAuth}
+              title={disableGoogleOAuth ? '請先在外部瀏覽器開啟此頁面' : ''}
               className="flex items-center justify-center gap-3 py-3.5 px-4 rounded-full bg-surface-container-low hover:bg-surface-container transition-colors font-medium text-on-surface disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Mail className="w-5 h-5" />
@@ -163,8 +165,8 @@ export default function LoginScreen({ onLogin, onNavigate }: LoginScreenProps) {
             </button>
             <button
               onClick={() => { window.location.href = '/api/auth/line'; }}
-              disabled={!!inAppBrowser}
-              title={inAppBrowser ? '請先在外部瀏覽器開啟此頁面' : ''}
+              disabled={disableLineOAuth}
+              title={disableLineOAuth ? '請先在外部瀏覽器開啟此頁面' : ''}
               className="flex items-center justify-center gap-3 py-3.5 px-4 rounded-full bg-surface-container-low hover:bg-surface-container transition-colors font-medium text-on-surface disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <MessageCircle className="w-5 h-5" />

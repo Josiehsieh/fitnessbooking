@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { Loader2, CheckCircle2, Minus, Plus, Tag, AlertCircle } from 'lucide-react';
 import { Screen } from '../App';
@@ -17,9 +17,9 @@ const BULK_MIN = 4;
 const BULK_DISCOUNT = 20;
 const COUPON_DISCOUNT = 20;
 
-function calcPrice(qty: number, couponApplied: boolean) {
+function calcPrice(qty: number, couponApplied: boolean, bulkDiscountEligible: boolean) {
   const subtotal = qty * PRICE_PER_CLASS;
-  const bulkDiscount = qty >= BULK_MIN ? BULK_DISCOUNT : 0;
+  const bulkDiscount = qty >= BULK_MIN && bulkDiscountEligible ? BULK_DISCOUNT : 0;
   const couponDiscount = couponApplied ? COUPON_DISCOUNT : 0;
   const discount = bulkDiscount + couponDiscount;
   return { subtotal, bulkDiscount, couponDiscount, discount, total: Math.max(0, subtotal - discount) };
@@ -37,10 +37,31 @@ export default function CheckoutScreen({
   const [couponApplied, setCouponApplied] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [bulkDiscountEligible, setBulkDiscountEligible] = useState(true);
 
   const hasCredits = (user?.credits ?? 0) >= 1;
   const canBookWithCredits = Boolean(selectedClass) && hasCredits;
-  const pricing = calcPrice(quantity, Boolean(couponApplied));
+  const pricing = calcPrice(quantity, Boolean(couponApplied), bulkDiscountEligible);
+
+  useEffect(() => {
+    let alive = true;
+    if (!user) return;
+    (async () => {
+      try {
+        const res = await api.orders.listMine();
+        if (!alive) return;
+        const used = res.orders.some(
+          (o) => o.status !== 'cancelled' && Number(o.quantity || 0) >= BULK_MIN
+        );
+        setBulkDiscountEligible(!used);
+      } catch {
+        // Keep optimistic default to avoid blocking checkout UI.
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [user?.id]);
 
   const changeQty = (delta: number) => {
     setQuantity((q) => Math.max(1, Math.min(50, q + delta)));
@@ -162,7 +183,7 @@ export default function CheckoutScreen({
               <div>
                 <h2 className="text-xl font-bold text-on-surface mb-1">選擇購買堂數</h2>
                 <p className="text-sm text-on-surface-variant font-medium">
-                  每堂 NT${PRICE_PER_CLASS}・購買 {BULK_MIN} 堂以上自動折扣 NT${BULK_DISCOUNT}
+                  每堂 NT${PRICE_PER_CLASS}・購買 {BULK_MIN} 堂以上可折 NT${BULK_DISCOUNT}（每帳號限一次）
                 </p>
               </div>
 
@@ -207,11 +228,18 @@ export default function CheckoutScreen({
                   ))}
                 </div>
 
-                {quantity >= BULK_MIN ? (
+                {quantity >= BULK_MIN && bulkDiscountEligible ? (
                   <div className="mt-6 flex items-center gap-3 bg-secondary-container/40 rounded-2xl px-5 py-3">
                     <Tag className="w-4 h-4 text-secondary shrink-0" />
                     <p className="text-sm font-bold text-on-secondary-container">
                       已達 {BULK_MIN} 堂折扣！省下 NT${BULK_DISCOUNT}
+                    </p>
+                  </div>
+                ) : quantity >= BULK_MIN && !bulkDiscountEligible ? (
+                  <div className="mt-6 flex items-center gap-3 bg-surface-container rounded-2xl px-5 py-3">
+                    <AlertCircle className="w-4 h-4 text-on-surface-variant shrink-0" />
+                    <p className="text-sm text-on-surface-variant font-medium">
+                      此帳號已使用過 {BULK_MIN} 堂折扣，這次不再折抵
                     </p>
                   </div>
                 ) : (

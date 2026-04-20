@@ -1009,6 +1009,23 @@ def calc_price(quantity: int) -> dict:
     return {"subtotal": subtotal, "discount": discount, "total": total}
 
 
+def _has_used_bulk_discount(user_id: str) -> bool:
+    """是否已使用過「滿 4 堂折 NT$20」活動（每帳號限一次）。"""
+    orders = _cached_records("Orders")
+    for order in orders:
+        if str(order.get("user_id")) != str(user_id):
+            continue
+        if str(order.get("status", "")).lower() == "cancelled":
+            continue
+        try:
+            quantity = int(order.get("quantity", 0) or 0)
+        except (TypeError, ValueError):
+            quantity = 0
+        if quantity >= BULK_DISCOUNT_MIN:
+            return True
+    return False
+
+
 @app.route("/api/packages/pricing", methods=["GET"])
 def get_pricing():
     """回傳定價規則，供前端即時計算。"""
@@ -1069,7 +1086,10 @@ def create_order():
         return jsonify({"error": "折扣碼無效", "code": "INVALID_COUPON"}), 400
 
     subtotal = pricing["subtotal"]
-    total_discount = pricing["discount"] + coupon_discount
+    bulk_discount = pricing["discount"]
+    if bulk_discount > 0 and _has_used_bulk_discount(str(user["user_id"])):
+        bulk_discount = 0
+    total_discount = bulk_discount + coupon_discount
     total = max(0, subtotal - total_discount)
 
     try:
