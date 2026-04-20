@@ -98,11 +98,11 @@ export default function ScheduleScreen({
   useEffect(() => {
     api.classes.list()
       .then((res) => {
-        // 只顯示「今天」到「今天+28 天」之間的課程（未來四週）
+        // 只顯示「今天」到「今天+42 天」之間的課程（未來六週）
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const maxDate = new Date(today);
-        maxDate.setDate(maxDate.getDate() + 28);
+        maxDate.setDate(maxDate.getDate() + 42);
         const fromISO = toISODate(today);
         const toISO = toISODate(maxDate);
         const windowed = res.classes.filter(
@@ -345,14 +345,14 @@ export default function ScheduleScreen({
             <div className="text-center py-24 bg-surface-container-low rounded-3xl">
               <p className="text-lg font-semibold text-on-surface mb-2">尚無可預約課程</p>
               <p className="text-sm text-on-surface-variant">
-                未來四週內目前還沒有開放預約的課程，請稍後再查看
+                未來六週內目前還沒有開放預約的課程，請稍後再查看
               </p>
             </div>
           )}
 
           {!loading && !error && schedules.length > 0 && (
             <p className="text-xs text-on-surface-variant/80 px-2 -mb-4">
-              顯示今日起 <span className="font-semibold text-on-surface">未來四週</span> 內的課程（共 {schedules.reduce((n, d) => n + d.classes.length, 0)} 堂）
+              顯示今日起 <span className="font-semibold text-on-surface">未來六週</span> 內的課程（共 {schedules.reduce((n, d) => n + d.classes.length, 0)} 堂）
             </p>
           )}
 
@@ -393,22 +393,29 @@ export default function ScheduleScreen({
                           <span className="flex items-center gap-1.5">
                             <CreditCard className="w-4 h-4" /> ${Number(cls.price).toFixed(2)}
                           </span>
-                          <span
-                            className={`flex items-center gap-1.5 font-medium ${
-                              spots.type === 'urgent'
-                                ? 'text-tertiary font-bold'
-                                : spots.type === 'full'
-                                ? 'text-error'
-                                : 'text-secondary'
-                            }`}
-                          >
-                            {spots.type === 'urgent' ? (
-                              <AlertCircle className="w-4 h-4" />
-                            ) : (
-                              <UserCheck className="w-4 h-4" />
-                            )}
-                            {spots.label}
-                          </span>
+                          {user ? (
+                            <span
+                              className={`flex items-center gap-1.5 font-medium ${
+                                spots.type === 'urgent'
+                                  ? 'text-tertiary font-bold'
+                                  : spots.type === 'full'
+                                  ? 'text-error'
+                                  : 'text-secondary'
+                              }`}
+                            >
+                              {spots.type === 'urgent' ? (
+                                <AlertCircle className="w-4 h-4" />
+                              ) : (
+                                <UserCheck className="w-4 h-4" />
+                              )}
+                              {spots.label}
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1.5 font-medium text-on-surface-variant">
+                              <Info className="w-4 h-4" />
+                              登入後可查看剩餘名額
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
