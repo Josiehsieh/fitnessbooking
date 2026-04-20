@@ -358,6 +358,11 @@ export const api = {
         total: number;
       }>("/api/admin/bookings"),
 
+    deleteBooking: (bookingId: string) =>
+      apiFetch<{ message: string }>(`/api/admin/bookings/${bookingId}`, {
+        method: "DELETE",
+      }),
+
     listOrders: () =>
       apiFetch<{ orders: Order[]; total: number }>("/api/admin/orders"),
 

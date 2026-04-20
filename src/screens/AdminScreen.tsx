@@ -801,6 +801,7 @@ function BookingsTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState<'all' | 'confirmed' | 'cancelled'>('all');
+  const [busyBookingId, setBusyBookingId] = useState('');
 
   useEffect(() => {
     api.admin
@@ -814,6 +815,21 @@ function BookingsTab() {
   if (error) return <ErrorBlock message={error} />;
 
   const filtered = filter === 'all' ? bookings : bookings.filter((b) => b.status === filter);
+
+  const handleDeleteBooking = async (bookingId: string) => {
+    if (!confirm('確定要刪除此筆預約？系統會回補該會員 1 堂並釋出名額。')) return;
+    setBusyBookingId(bookingId);
+    try {
+      await api.admin.deleteBooking(bookingId);
+      setBookings((list) =>
+        list.map((b) => (b.booking_id === bookingId ? { ...b, status: 'cancelled' } : b)),
+      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '刪除失敗');
+    } finally {
+      setBusyBookingId('');
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -840,6 +856,7 @@ function BookingsTab() {
                 <th className="text-left px-4 py-3">課程</th>
                 <th className="text-left px-4 py-3">上課時間</th>
                 <th className="text-center px-4 py-3">狀態</th>
+                <th className="text-center px-4 py-3">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -863,6 +880,21 @@ function BookingsTab() {
                         已取消
                       </span>
                     )}
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <button
+                      onClick={() => handleDeleteBooking(b.booking_id)}
+                      disabled={b.status === 'cancelled' || busyBookingId === b.booking_id}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs bg-surface-container-high hover:bg-error hover:text-on-error disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      title={b.status === 'cancelled' ? '此預約已取消' : '刪除預約（回補堂數）'}
+                    >
+                      {busyBookingId === b.booking_id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
+                      刪除
+                    </button>
                   </td>
                 </tr>
               ))}

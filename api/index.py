@@ -286,12 +286,22 @@ def _auth_required():
 
 
 def _is_admin(user: dict) -> bool:
-    """檢查使用者是否為管理員（由 ADMIN_EMAILS 環境變數決定）。"""
+    """檢查使用者是否為管理員（支援 email 或 user_id 白名單）。"""
     if not user:
         return False
-    admin_emails = os.environ.get("ADMIN_EMAILS", "").lower().split(",")
-    admin_emails = [e.strip() for e in admin_emails if e.strip()]
-    return str(user.get("email", "")).lower() in admin_emails
+    admin_emails = [
+        e.strip().lower()
+        for e in os.environ.get("ADMIN_EMAILS", "").split(",")
+        if e.strip()
+    ]
+    admin_user_ids = [
+        uid.strip().lower()
+        for uid in os.environ.get("ADMIN_USER_IDS", "").split(",")
+        if uid.strip()
+    ]
+    user_email = str(user.get("email", "") or "").strip().lower()
+    user_id = str(user.get("user_id", "") or "").strip().lower()
+    return user_email in admin_emails or user_id in admin_user_ids
 
 
 def _admin_required():
@@ -1391,16 +1401,24 @@ def line_callback():
 
 @app.route("/api/admin/_debug", methods=["GET"])
 def admin_debug():
-    """臨時除錯用：檢查 ADMIN_EMAILS 環境變數與目前登入使用者是否匹配。"""
+    """臨時除錯用：檢查管理員白名單環境變數與目前登入者是否匹配。"""
     user, _ = _auth_required()
     admin_emails_raw = os.environ.get("ADMIN_EMAILS", "")
+    admin_user_ids_raw = os.environ.get("ADMIN_USER_IDS", "")
     admin_emails = [e.strip() for e in admin_emails_raw.lower().split(",") if e.strip()]
+    admin_user_ids = [uid.strip() for uid in admin_user_ids_raw.lower().split(",") if uid.strip()]
     user_email = str((user or {}).get("email", "")).lower() if user else ""
+    user_id = str((user or {}).get("user_id", "")).lower() if user else ""
     return jsonify({
         "env_admin_emails_raw": repr(admin_emails_raw),
+        "env_admin_user_ids_raw": repr(admin_user_ids_raw),
         "env_admin_emails_parsed": admin_emails,
+        "env_admin_user_ids_parsed": admin_user_ids,
         "your_email": user_email,
-        "match": user_email in admin_emails if user_email else False,
+        "your_user_id": user_id,
+        "match_email": user_email in admin_emails if user_email else False,
+        "match_user_id": user_id in admin_user_ids if user_id else False,
+        "match": (user_email in admin_emails if user_email else False) or (user_id in admin_user_ids if user_id else False),
         "authenticated": user is not None,
     })
 
@@ -1705,6 +1723,71 @@ def admin_list_bookings():
                 "user_name": u.get("name", ""),
             })
         return jsonify({"bookings": _safe(enriched), "total": len(enriched)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/bookings/<booking_id>", methods=["DELETE"])
+def admin_cancel_booking(booking_id):
+    """管理員取消預約：可強制取消，並回補會員堂數與課程名額。"""
+    admin, _ = _admin_required()
+    if not admin:
+        return jsonify({"error": "需要管理員權限"}), 403
+
+    try:
+        bookings_ws = _ws("Bookings")
+        bookings = _cached_records("Bookings")
+
+        for i, b in enumerate(bookings):
+            if str(b.get("booking_id")) != str(booking_id):
+                continue
+
+            if b.get("status") == "cancelled":
+                return jsonify({"error": "此預約已取消"}), 400
+
+            row_num = i + 2
+            bookings_ws.update_cell(row_num, 6, "cancelled")
+
+            # Restore spot in class
+            classes_ws = _ws("Classes")
+            classes = _cached_records("Classes")
+            for j, c in enumerate(classes):
+                if str(c.get("class_id")) == str(b.get("class_id")):
+                    new_spots = max(0, int(c.get("booked_spots", 0) or 0) - 1)
+                    classes_ws.update_cell(j + 2, 8, new_spots)
+                    break
+
+            # Refund one credit to the booking owner
+            users_ws = _ws("Users")
+            users = _cached_records("Users")
+            target_user = None
+            new_credits = None
+            for j, u in enumerate(users):
+                if str(u.get("user_id")) == str(b.get("user_id")):
+                    target_user = u
+                    new_credits = int(u.get("credits", 0) or 0) + 1
+                    users_ws.update_cell(j + 2, 5, new_credits)
+                    break
+
+            _invalidate_cache("Users", "Classes", "Bookings")
+
+            if target_user and new_credits is not None:
+                dt_str = str(b.get("class_datetime", ""))
+                _notify(
+                    target_user,
+                    f"已取消預約｜{b.get('class_name', '課程')}",
+                    _booking_cancel_email_html(
+                        str(b.get("class_name", "課程")), dt_str, new_credits
+                    ),
+                    line_text=(
+                        f"❎ 預約已取消\n課程：{b.get('class_name', '課程')}\n原時間：{dt_str}\n"
+                        f"堂數已退還，目前剩餘 {new_credits} 堂。"
+                    ),
+                )
+
+            return jsonify({"message": "預約已取消並回補堂數"})
+
+        return jsonify({"error": "找不到此預約"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
