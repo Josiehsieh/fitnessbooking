@@ -1087,10 +1087,10 @@ def create_order():
     coupon_code = str(data.get("coupon_code", "") or "").strip().upper()
 
     pricing = calc_price(quantity)
-    # Phase 1: 先簡易支援固定折扣碼 NEW20（新同學折扣 NT$20）
+    # Phase 1: 先簡易支援固定折扣碼（新同學折扣 NT$20）
     # Phase 2 會改為從 Coupons sheet 讀取
     coupon_discount = 0
-    if coupon_code == "NEW20":
+    if coupon_code in {"NEW20", "NEWNEW1987"}:
         coupon_discount = 20
     elif coupon_code:
         return jsonify({"error": "折扣碼無效", "code": "INVALID_COUPON"}), 400
