@@ -178,7 +178,11 @@ def _cached_records(sheet_name: str):
                 ws = _ensure_settings_sheet()
             else:
                 ws = _ws(sheet_name)
-            data = ws.get_all_records()
+            if sheet_name == "Settings":
+                # Keep values as literal strings (e.g. bank account with leading 0s).
+                data = ws.get_all_records(numericise_ignore=["all"])
+            else:
+                data = ws.get_all_records()
             _sheet_cache[sheet_name] = (now, data)
             return data
         except Exception as e:
@@ -383,10 +387,10 @@ def _set_setting(key: str, value: str):
     rows = _cached_records("Settings")
     for i, r in enumerate(rows):
         if str(r.get("key")) == key:
-            ws.update_cell(i + 2, 2, value)
+            ws.update(f"B{i + 2}", [[value]], raw=True)
             _invalidate_cache("Settings")
             return
-    ws.append_row([key, value])
+    ws.append_row([key, value], value_input_option="RAW")
     _invalidate_cache("Settings")
 
 
@@ -1090,7 +1094,7 @@ def create_order():
     # Phase 1: 先簡易支援固定折扣碼（新同學折扣 NT$20）
     # Phase 2 會改為從 Coupons sheet 讀取
     coupon_discount = 0
-    if coupon_code in {"NEW20", "NEWNEW1987"}:
+    if coupon_code == "FIRST20":
         coupon_discount = 20
     elif coupon_code:
         return jsonify({"error": "折扣碼無效", "code": "INVALID_COUPON"}), 400
