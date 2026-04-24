@@ -427,6 +427,10 @@ function ClassesTab() {
     total_spots: 10,
   });
   const [submitting, setSubmitting] = useState(false);
+  const [classBookings, setClassBookings] = useState<Awaited<ReturnType<typeof api.admin.listBookings>>['bookings']>([]);
+  const [bookingsLoading, setBookingsLoading] = useState(true);
+  const [bookingsError, setBookingsError] = useState('');
+  const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
 
   // Date filter state
   const [preset, setPreset] = useState<DatePreset>('upcoming');
@@ -444,6 +448,15 @@ function ClassesTab() {
 
   useEffect(() => {
     reload();
+  }, []);
+
+  useEffect(() => {
+    setBookingsLoading(true);
+    api.admin
+      .listBookings()
+      .then((r) => setClassBookings(r.bookings))
+      .catch((e) => setBookingsError(e.message))
+      .finally(() => setBookingsLoading(false));
   }, []);
 
   const resetForm = () => {
@@ -518,6 +531,16 @@ function ClassesTab() {
       alert((err as Error).message);
     }
   };
+
+  const selectedClass = selectedClassId
+    ? classes.find((c) => c.class_id === selectedClassId) ?? null
+    : null;
+
+  const selectedClassMembers = selectedClassId
+    ? classBookings.filter(
+        (b) => b.class_id === selectedClassId && b.status === 'confirmed',
+      )
+    : [];
 
   if (loading) return <LoadingBlock />;
   if (error) return <ErrorBlock message={error} />;
@@ -728,8 +751,15 @@ function ClassesTab() {
             <tbody>
               {filtered.map((c) => {
                 const isPast = c.date < today;
+                const isSelected = c.class_id === selectedClassId;
                 return (
-                  <tr key={c.class_id} className={`border-t border-outline-variant ${isPast ? 'opacity-60' : ''}`}>
+                  <tr
+                    key={c.class_id}
+                    onClick={() => setSelectedClassId((prev) => (prev === c.class_id ? null : c.class_id))}
+                    className={`border-t border-outline-variant cursor-pointer transition-colors ${
+                      isSelected ? 'bg-primary-container/30' : 'hover:bg-surface-container-high'
+                    } ${isPast ? 'opacity-60' : ''}`}
+                  >
                     <td className="px-4 py-3">
                       <div className="font-medium flex items-center gap-2">
                         {c.date}
@@ -754,14 +784,20 @@ function ClassesTab() {
                     <td className="px-4 py-3 text-center">
                       <div className="flex items-center justify-center gap-1">
                         <button
-                          onClick={() => openEdit(c)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEdit(c);
+                          }}
                           className="p-2 rounded-full hover:bg-primary/10 hover:text-primary transition-colors"
                           title="編輯課程"
                         >
                           <Pencil className="w-4 h-4" />
                         </button>
                         <button
-                          onClick={() => handleDelete(c.class_id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete(c.class_id);
+                          }}
                           className="p-2 rounded-full hover:bg-error hover:text-on-error transition-colors"
                           title="刪除課程"
                         >
@@ -781,6 +817,58 @@ function ClassesTab() {
           </p>
         )}
       </div>
+      {selectedClassId && (
+        <div className="rounded-2xl bg-surface-container p-4 md:p-5 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold">本堂課預約名單</h3>
+              <p className="text-sm text-on-surface-variant">
+                {selectedClass
+                  ? `${selectedClass.date} ${selectedClass.time} · ${selectedClass.name}`
+                  : '課程資訊載入中'}
+              </p>
+            </div>
+            <button
+              onClick={() => setSelectedClassId(null)}
+              className="px-3 py-1.5 rounded-full bg-surface-container-high text-xs font-medium text-on-surface-variant hover:bg-surface-container-highest"
+            >
+              關閉
+            </button>
+          </div>
+
+          {bookingsLoading ? (
+            <div className="py-4 flex items-center gap-2 text-sm text-on-surface-variant">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              名單載入中...
+            </div>
+          ) : bookingsError ? (
+            <p className="text-sm text-error">載入預約名單失敗：{bookingsError}</p>
+          ) : selectedClassMembers.length === 0 ? (
+            <p className="text-sm text-on-surface-variant">目前沒有人預約這堂課。</p>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-outline-variant">
+              <table className="w-full text-sm">
+                <thead className="bg-surface-container-high text-on-surface-variant">
+                  <tr>
+                    <th className="text-left px-4 py-2.5">姓名</th>
+                    <th className="text-left px-4 py-2.5">Email</th>
+                    <th className="text-left px-4 py-2.5">預約時間</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedClassMembers.map((b) => (
+                    <tr key={b.booking_id} className="border-t border-outline-variant">
+                      <td className="px-4 py-2.5">{b.user_name || '未填寫'}</td>
+                      <td className="px-4 py-2.5">{b.user_email || '—'}</td>
+                      <td className="px-4 py-2.5 text-on-surface-variant">{b.created_at || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
