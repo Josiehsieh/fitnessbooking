@@ -642,7 +642,14 @@ def _order_cancelled_email_html(order_id: str, reason: str) -> str:
     )
 
 
-def _notify(user: dict, subject: str, body_html: str, line_text: str = "", plain_text: str = ""):
+def _notify(
+    user: dict,
+    subject: str,
+    body_html: str,
+    line_text: str = "",
+    plain_text: str = "",
+    sync_line: bool = False,
+):
     """Send both channels according to user prefs. Silently ignores disabled / unavailable channels."""
     if not user:
         return
@@ -652,10 +659,16 @@ def _notify(user: dict, subject: str, body_html: str, line_text: str = "", plain
     if want_email and email and "@" in email and not email.endswith((".placeholder",)) and not email.endswith("@line.placeholder") and not email.endswith("@google.placeholder"):
         _send_email(email, subject, _email_wrap(subject, body_html), plain_text)
 
-    line_uid = str(user.get("line_user_id", "") or "")
-    want_line = _bool_cell(user.get("notify_line"), default=False)
+    line_uid = str(user.get("line_user_id", "") or "").strip()
+    # If the preference cell is missing/empty but user already linked LINE,
+    # default to sending so critical notices are not silently dropped.
+    want_line = _bool_cell(user.get("notify_line"), default=bool(line_uid))
     if want_line and line_uid:
-        _send_line_push(line_uid, line_text or plain_text or _html_to_text(body_html))
+        payload = line_text or plain_text or _html_to_text(body_html)
+        if sync_line:
+            _send_line_push_sync(line_uid, payload)
+        else:
+            _send_line_push(line_uid, payload)
 
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
@@ -1145,6 +1158,7 @@ def create_order():
                 f"戶名：{payment_info['bank_holder']}\n\n"
                 f"匯款後請將截圖傳給小助理 {payment_info['line_assistant_id']}"
             ),
+            sync_line=True,
         )
 
         return jsonify({
@@ -1920,6 +1934,7 @@ def admin_confirm_order(order_id):
                     f"🎉 付款已確認！\n本次購買 {quantity} 堂（NT${order_total:,}）已加入您的帳戶。\n"
                     f"目前總堂數：{new_credits} 堂\n有效期至：{final_expiry}\n\n快到官網預約課程吧！"
                 ),
+                sync_line=True,
             )
 
             return jsonify({
@@ -1976,6 +1991,7 @@ def admin_cancel_order(order_id):
                             + (f"原因：{reason}\n" if reason else "")
                             + "如有疑問請聯絡小助理。"
                         ),
+                        sync_line=True,
                     )
 
                 return jsonify({"message": "訂單已取消"})
