@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api/client';
+import { Menu, X } from 'lucide-react';
 
 interface NavbarProps {
   currentScreen: string;
@@ -10,6 +11,7 @@ interface NavbarProps {
 export default function Navbar({ currentScreen, onNavigate, isLoggedIn }: NavbarProps) {
   const [scrolled, setScrolled] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 20);
@@ -27,6 +29,10 @@ export default function Navbar({ currentScreen, onNavigate, isLoggedIn }: Navbar
       .then((r) => setIsAdmin(r.is_admin))
       .catch(() => setIsAdmin(false));
   }, [isLoggedIn]);
+
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [currentScreen]);
 
   return (
     <nav className={`fixed top-0 w-full z-50 transition-all duration-300 ${scrolled ? 'bg-surface/80 backdrop-blur-xl shadow-sm' : 'bg-transparent'}`}>
@@ -85,6 +91,13 @@ export default function Navbar({ currentScreen, onNavigate, isLoggedIn }: Navbar
               管理後台
             </button>
           )}
+          <button
+            onClick={() => setMobileMenuOpen((prev) => !prev)}
+            className="md:hidden text-on-surface-variant p-2 rounded-lg hover:bg-surface-container transition-colors"
+            aria-label={mobileMenuOpen ? '關閉選單' : '開啟選單'}
+          >
+            {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
           {!isLoggedIn && currentScreen !== 'login' && (
             <button 
               onClick={() => onNavigate('login')}
@@ -101,6 +114,60 @@ export default function Navbar({ currentScreen, onNavigate, isLoggedIn }: Navbar
           </button>
         </div>
       </div>
+      {mobileMenuOpen && (
+        <div className="md:hidden bg-surface/95 backdrop-blur-xl border-t border-outline/20 px-6 py-4 space-y-2">
+          <button
+            onClick={() => onNavigate('ubound-info')}
+            className={`block w-full text-left px-3 py-2 rounded-lg font-headline text-sm ${
+              currentScreen === 'ubound-info' ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:bg-surface-container'
+            }`}
+          >
+            課程介紹
+          </button>
+          <button
+            onClick={() => onNavigate('schedule')}
+            className={`block w-full text-left px-3 py-2 rounded-lg font-headline text-sm ${
+              currentScreen === 'schedule' ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:bg-surface-container'
+            }`}
+          >
+            預約課程
+          </button>
+          <button
+            onClick={() => onNavigate(isLoggedIn ? 'dashboard' : 'login')}
+            className={`block w-full text-left px-3 py-2 rounded-lg font-headline text-sm ${
+              currentScreen === 'dashboard' ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:bg-surface-container'
+            }`}
+          >
+            我的課表
+          </button>
+          <button
+            onClick={() => onNavigate('checkout')}
+            className={`block w-full text-left px-3 py-2 rounded-lg font-headline text-sm ${
+              currentScreen === 'checkout' ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:bg-surface-container'
+            }`}
+          >
+            價格方案
+          </button>
+          <button
+            onClick={() => onNavigate(isLoggedIn ? 'dashboard' : 'login')}
+            className={`block w-full text-left px-3 py-2 rounded-lg font-headline text-sm ${
+              currentScreen === 'login' ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:bg-surface-container'
+            }`}
+          >
+            個人檔案
+          </button>
+          {isAdmin && (
+            <button
+              onClick={() => onNavigate('admin')}
+              className={`block w-full text-left px-3 py-2 rounded-lg font-headline text-sm ${
+                currentScreen === 'admin' ? 'text-amber-700 bg-amber-100' : 'text-amber-600 hover:bg-amber-50'
+              }`}
+            >
+              管理後台
+            </button>
+          )}
+        </div>
+      )}
     </nav>
   );
 }
