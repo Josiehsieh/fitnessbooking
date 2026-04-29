@@ -459,6 +459,19 @@ def _has_confirmed_booking(bookings: list[dict], user_id: str, class_id: str) ->
     return False
 
 
+def _class_date_exceeds_credit_expiry(user: dict, class_date_str: str) -> bool:
+    """True when class date is later than user's credit expiry date."""
+    exp = str(user.get("credits_expire_at", "") or "").strip()
+    if not exp:
+        return False
+    try:
+        exp_date = datetime.date.fromisoformat(exp)
+        class_date = datetime.date.fromisoformat(str(class_date_str))
+        return class_date > exp_date
+    except ValueError:
+        return False
+
+
 def _users_col_index(header_name: str) -> int:
     """Returns 1-based column index of a header in the Users sheet, auto-adding it if missing."""
     ws = _ws("Users")
@@ -925,6 +938,9 @@ def create_booking():
 
         if _active_credits(user) < 1:
             return jsonify({"error": "堂數不足，請先購買套票", "code": "NO_CREDITS"}), 400
+
+        if _class_date_exceeds_credit_expiry(user, str(target.get("date", ""))):
+            return jsonify({"error": "此課程日期已超過您的堂數有效期限，請先購買或延長效期", "code": "EXPIRE_BEFORE_CLASS"}), 400
 
         bookings_ws = _ws("Bookings")
         bookings = _cached_records("Bookings")
@@ -1835,6 +1851,9 @@ def admin_create_booking():
         current_credits = _active_credits(target_user)
         if current_credits < 1:
             return jsonify({"error": "會員堂數不足，無法代為預約"}), 400
+
+        if _class_date_exceeds_credit_expiry(target_user, str(target_class.get("date", ""))):
+            return jsonify({"error": "此課程日期已超過會員堂數有效期限，請先延長效期"}), 400
 
         booking_id = secrets.token_hex(8)
         now = datetime.datetime.now().isoformat()
