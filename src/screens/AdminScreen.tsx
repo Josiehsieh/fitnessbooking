@@ -886,15 +886,23 @@ function FormField({ label, children }: { label: string; children: React.ReactNo
 
 function BookingsTab() {
   const [bookings, setBookings] = useState<Awaited<ReturnType<typeof api.admin.listBookings>>['bookings']>([]);
+  const [users, setUsers] = useState<Awaited<ReturnType<typeof api.admin.listUsers>>['users']>([]);
+  const [classes, setClasses] = useState<Awaited<ReturnType<typeof api.classes.list>>['classes']>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState<'all' | 'confirmed' | 'cancelled'>('all');
   const [busyBookingId, setBusyBookingId] = useState('');
+  const [createBusy, setCreateBusy] = useState(false);
+  const [selectedUserId, setSelectedUserId] = useState('');
+  const [selectedClassId, setSelectedClassId] = useState('');
 
   useEffect(() => {
-    api.admin
-      .listBookings()
-      .then((r) => setBookings(r.bookings))
+    Promise.all([api.admin.listBookings(), api.admin.listUsers(), api.classes.list()])
+      .then(([bookingsRes, usersRes, classesRes]) => {
+        setBookings(bookingsRes.bookings);
+        setUsers(usersRes.users);
+        setClasses(classesRes.classes);
+      })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
@@ -919,8 +927,81 @@ function BookingsTab() {
     }
   };
 
+  const handleCreateBooking = async () => {
+    if (!selectedUserId || !selectedClassId) {
+      alert('請先選擇會員與課程');
+      return;
+    }
+    setCreateBusy(true);
+    try {
+      const res = await api.admin.createBooking(selectedUserId, selectedClassId);
+      const pickedUser = users.find((u) => u.user_id === selectedUserId);
+      setBookings((list) => [
+        {
+          ...res.booking,
+          user_email: pickedUser?.email || '',
+          user_name: pickedUser?.name || '',
+        },
+        ...list,
+      ]);
+      const targetUserId = selectedUserId;
+      setUsers((list) =>
+        list.map((u) =>
+          u.user_id === targetUserId
+            ? { ...u, credits: Math.max(0, Number(u.credits || 0) - 1) }
+            : u,
+        ),
+      );
+      alert(`建立成功，會員剩餘堂數：${res.credits_remaining} 堂`);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '建立預約失敗');
+    } finally {
+      setCreateBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
+      <div className="rounded-2xl bg-surface-container p-4 md:p-5 space-y-3">
+        <h3 className="text-base font-semibold">協助會員預約課程</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <select
+            value={selectedUserId}
+            onChange={(e) => setSelectedUserId(e.target.value)}
+            className="px-4 py-2.5 rounded-xl bg-surface-container-high border border-outline-variant/30"
+          >
+            <option value="">選擇會員</option>
+            {users.map((u) => (
+              <option key={u.user_id} value={u.user_id}>
+                {u.name || u.email}（{u.credits} 堂）
+              </option>
+            ))}
+          </select>
+          <select
+            value={selectedClassId}
+            onChange={(e) => setSelectedClassId(e.target.value)}
+            className="px-4 py-2.5 rounded-xl bg-surface-container-high border border-outline-variant/30"
+          >
+            <option value="">選擇課程</option>
+            {classes.map((c) => (
+              <option key={c.class_id} value={c.class_id}>
+                {c.date} {c.time}｜{c.name}（{c.booked_spots}/{c.total_spots}）
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex justify-end">
+          <button
+            onClick={handleCreateBooking}
+            disabled={createBusy || !selectedUserId || !selectedClassId}
+            className="px-5 py-2.5 rounded-full bg-primary text-on-primary text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
+          >
+            {createBusy && <Loader2 className="w-4 h-4 animate-spin" />}
+            代為預約
+          </button>
+        </div>
+      </div>
+
       <div className="flex gap-2">
         {(['all', 'confirmed', 'cancelled'] as const).map((f) => (
           <button

@@ -445,6 +445,20 @@ def _active_credits(user: dict) -> int:
         return 0
 
 
+def _has_confirmed_booking(bookings: list[dict], user_id: str, class_id: str) -> bool:
+    """True when the user already has a confirmed booking for the class."""
+    uid = str(user_id)
+    cid = str(class_id)
+    for b in bookings:
+        if str(b.get("user_id")) != uid:
+            continue
+        if str(b.get("class_id")) != cid:
+            continue
+        if str(b.get("status", "")).lower() == "confirmed":
+            return True
+    return False
+
+
 def _users_col_index(header_name: str) -> int:
     """Returns 1-based column index of a header in the Users sheet, auto-adding it if missing."""
     ws = _ws("Users")
@@ -912,8 +926,12 @@ def create_booking():
         if _active_credits(user) < 1:
             return jsonify({"error": "堂數不足，請先購買套票", "code": "NO_CREDITS"}), 400
 
-        # Create booking record
         bookings_ws = _ws("Bookings")
+        bookings = _cached_records("Bookings")
+        if _has_confirmed_booking(bookings, str(user["user_id"]), class_id):
+            return jsonify({"error": "同一堂課每位會員限預約一次", "code": "DUPLICATE_BOOKING"}), 400
+
+        # Create booking record
         booking_id = secrets.token_hex(8)
         now = datetime.datetime.now().isoformat()
         class_datetime = f"{target['date']} {target['time']}"
@@ -1763,6 +1781,102 @@ def admin_list_bookings():
                 "user_name": u.get("name", ""),
             })
         return jsonify({"bookings": _safe(enriched), "total": len(enriched)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/bookings", methods=["POST"])
+def admin_create_booking():
+    """管理員代客建立預約（扣 1 堂、占 1 名額）。"""
+    admin, _ = _admin_required()
+    if not admin:
+        return jsonify({"error": "需要管理員權限"}), 403
+
+    data = request.get_json() or {}
+    user_id = str(data.get("user_id", "") or "").strip()
+    class_id = str(data.get("class_id", "") or "").strip()
+    if not user_id or not class_id:
+        return jsonify({"error": "缺少 user_id 或 class_id"}), 400
+
+    try:
+        users = _cached_records("Users")
+        target_user = None
+        user_row = None
+        for i, u in enumerate(users):
+            if str(u.get("user_id")) == user_id:
+                target_user = u
+                user_row = i + 2
+                break
+        if not target_user or user_row is None:
+            return jsonify({"error": "找不到會員"}), 404
+
+        classes_ws = _ws("Classes")
+        classes = _cached_records("Classes")
+        target_class = None
+        class_row = None
+        for i, c in enumerate(classes):
+            if str(c.get("class_id")) == class_id:
+                target_class = c
+                class_row = i + 2
+                break
+        if not target_class or class_row is None:
+            return jsonify({"error": "找不到課程"}), 404
+
+        if int(target_class.get("booked_spots", 0) or 0) >= int(target_class.get("total_spots", 0) or 0):
+            return jsonify({"error": "此課程已額滿"}), 400
+
+        bookings = _cached_records("Bookings")
+        if _has_confirmed_booking(bookings, user_id, class_id):
+            return jsonify({"error": "同一堂課每位會員限預約一次", "code": "DUPLICATE_BOOKING"}), 400
+
+        if _credits_expired(target_user):
+            return jsonify({"error": "會員堂數已過期，請先處理堂數效期"}), 400
+
+        current_credits = _active_credits(target_user)
+        if current_credits < 1:
+            return jsonify({"error": "會員堂數不足，無法代為預約"}), 400
+
+        booking_id = secrets.token_hex(8)
+        now = datetime.datetime.now().isoformat()
+        class_datetime = f"{target_class['date']} {target_class['time']}"
+
+        _ws("Bookings").append_row([
+            booking_id,
+            user_id,
+            class_id,
+            target_class["name"],
+            class_datetime,
+            "confirmed",
+            now,
+        ])
+        classes_ws.update_cell(class_row, 8, int(target_class.get("booked_spots", 0) or 0) + 1)
+        new_credits = int(target_user.get("credits", 0) or 0) - 1
+        _ws("Users").update_cell(user_row, 5, new_credits)
+        _invalidate_cache("Users", "Classes", "Bookings")
+
+        _notify(
+            target_user,
+            f"預約成功｜{target_class['name']}",
+            _booking_email_html(target_class["name"], class_datetime, new_credits),
+            line_text=(
+                f"✅ 預約成功\n課程：{target_class['name']}\n時間：{class_datetime}\n"
+                f"剩餘堂數：{new_credits} 堂\n提醒：開始前 6 小時內無法取消。"
+            ),
+        )
+
+        return jsonify({
+            "message": "已成功代會員完成預約",
+            "booking": {
+                "booking_id": booking_id,
+                "user_id": user_id,
+                "class_id": class_id,
+                "class_name": target_class["name"],
+                "class_datetime": class_datetime,
+                "status": "confirmed",
+                "created_at": now,
+            },
+            "credits_remaining": new_credits,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

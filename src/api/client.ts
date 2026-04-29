@@ -358,6 +358,24 @@ export const api = {
         total: number;
       }>("/api/admin/bookings"),
 
+    createBooking: (userId: string, classId: string) =>
+      apiFetch<{
+        message: string;
+        booking: {
+          booking_id: string;
+          user_id: string;
+          class_id: string;
+          class_name: string;
+          class_datetime: string;
+          status: string;
+          created_at: string;
+        };
+        credits_remaining: number;
+      }>("/api/admin/bookings", {
+        method: "POST",
+        body: JSON.stringify({ user_id: userId, class_id: classId }),
+      }),
+
     deleteBooking: (bookingId: string) =>
       apiFetch<{ message: string }>(`/api/admin/bookings/${bookingId}`, {
         method: "DELETE",
