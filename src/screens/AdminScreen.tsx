@@ -1179,9 +1179,16 @@ function ConfirmOrderModal({
   onCancel: () => void;
   onSubmit: (expireAt: string) => void;
 }) {
-  // Default expiry = last day of current month (same rule as backend default).
+  // Default expiry follows backend rule:
+  // 1-8 classes => end of current month; >8 classes => two months from today.
   const defaultExpiry = (() => {
     const now = new Date();
+    if ((order.quantity ?? 0) > 8) {
+      const d = new Date(now);
+      d.setMonth(d.getMonth() + 2);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
     const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
     const pad = (n: number) => String(n).padStart(2, '0');
     return `${last.getFullYear()}-${pad(last.getMonth() + 1)}-${pad(last.getDate())}`;

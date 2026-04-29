@@ -97,7 +97,7 @@ export default function PaymentPendingScreen({ onNavigate, order, paymentInfo }:
           <li>依上方帳號完成匯款 NT$ {order.total.toLocaleString()}</li>
           <li>將匯款截圖 <strong>連同訂單編號</strong> <code className="bg-surface-container px-2 py-0.5 rounded text-xs">{order.order_id}</code> 傳送給 LINE 小助理 <strong className="text-primary">{paymentInfo.line_assistant_id || '@601gzrce'}</strong></li>
           <li>管理員確認款項後，堂數會立即加到您的帳號</li>
-          <li>堂數有效期限至 <strong className="text-primary">本月月底</strong>，請儘早預約課程</li>
+          <li>堂數效期規則：購買 <strong className="text-primary">1–8 堂</strong> 為本月月底，<strong className="text-primary">超過 8 堂</strong> 為兩個月</li>
         </ol>
         {paymentInfo.payment_note && (
           <p className="mt-4 pt-4 border-t border-outline-variant/20 text-xs text-on-surface-variant">

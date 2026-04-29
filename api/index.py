@@ -404,6 +404,28 @@ def _last_day_of_month(date_obj=None) -> str:
     return datetime.date(d.year, d.month, last).isoformat()
 
 
+def _add_months(date_obj: datetime.date, months: int) -> datetime.date:
+    """Add calendar months while keeping day in valid range."""
+    from calendar import monthrange
+
+    month_index = (date_obj.month - 1) + months
+    year = date_obj.year + month_index // 12
+    month = (month_index % 12) + 1
+    day = min(date_obj.day, monthrange(year, month)[1])
+    return datetime.date(year, month, day)
+
+
+def _default_expiry_for_quantity(quantity: int) -> str:
+    """Default credit expiry policy:
+    - 1-8 classes: end of current month
+    - >8 classes: two months from today
+    """
+    today = datetime.date.today()
+    if quantity > 8:
+        return _add_months(today, 2).isoformat()
+    return _last_day_of_month(today)
+
+
 def _credits_expired(user: dict) -> bool:
     exp = str(user.get("credits_expire_at", "") or "").strip()
     if not exp:
@@ -1877,8 +1899,8 @@ def admin_confirm_order(order_id):
 
             quantity = int(o.get("quantity", 0) or 0)
             # Expiry for this batch: admin override takes priority, otherwise
-            # fall back to the default (last day of current month).
-            new_expiry = override_expiry or _last_day_of_month()
+            # fall back to quantity-based default.
+            new_expiry = override_expiry or _default_expiry_for_quantity(quantity)
 
             current_credits = int(target_user.get("credits", 0) or 0)
             if _credits_expired(target_user):

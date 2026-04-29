@@ -132,7 +132,7 @@ export default function CheckoutScreen({
             <p className="text-on-surface-variant text-lg font-medium">
               {canBookWithCredits
                 ? '您的堂數充足，直接完成預約即可'
-                : '購買堂數，完成匯款後即可預約課程（堂數有效期至本月月底）'}
+                : '購買堂數，完成匯款後即可預約課程（8 堂內有效期至本月月底，超過 8 堂為兩個月）'}
             </p>
           </div>
 
@@ -213,7 +213,7 @@ export default function CheckoutScreen({
                 </div>
 
                 <div className="flex gap-2 mt-8 flex-wrap">
-                  {[1, 4, 8, 10, 20].map((n) => (
+                  {[1, 4, 8, 12, 16].map((n) => (
                     <button
                       key={n}
                       onClick={() => setQuantity(n)}
