@@ -20,6 +20,7 @@ import {
   Save,
   Filter,
   X,
+  Copy,
   Mail,
   MessageSquare,
   Send,
@@ -427,6 +428,7 @@ function ClassesTab() {
     total_spots: 10,
   });
   const [submitting, setSubmitting] = useState(false);
+  const [duplicatingId, setDuplicatingId] = useState('');
   const [classBookings, setClassBookings] = useState<Awaited<ReturnType<typeof api.admin.listBookings>>['bookings']>([]);
   const [bookingsLoading, setBookingsLoading] = useState(true);
   const [bookingsError, setBookingsError] = useState('');
@@ -529,6 +531,26 @@ function ClassesTab() {
       setClasses((list) => list.filter((c) => c.class_id !== classId));
     } catch (err) {
       alert((err as Error).message);
+    }
+  };
+
+  const handleDuplicate = async (c: typeof classes[number]) => {
+    setDuplicatingId(c.class_id);
+    try {
+      await api.admin.createClass({
+        date: addDays(c.date, 7),
+        time: c.time,
+        name: c.name,
+        duration: c.duration,
+        price: c.price,
+        total_spots: c.total_spots,
+      });
+      await reload();
+      alert('課程已複製（日期自動順延 7 天）');
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setDuplicatingId('');
     }
   };
 
@@ -783,6 +805,21 @@ function ClassesTab() {
                     </td>
                     <td className="px-4 py-3 text-center">
                       <div className="flex items-center justify-center gap-1">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDuplicate(c);
+                          }}
+                          disabled={duplicatingId === c.class_id}
+                          className="p-2 rounded-full hover:bg-secondary/15 hover:text-secondary transition-colors disabled:opacity-50"
+                          title="複製課程（+7天）"
+                        >
+                          {duplicatingId === c.class_id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Copy className="w-4 h-4" />
+                          )}
+                        </button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
