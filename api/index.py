@@ -978,6 +978,7 @@ def create_booking():
                 f"✅ 預約成功\n課程：{target['name']}\n時間：{class_datetime}\n"
                 f"剩餘堂數：{new_credits} 堂\n提醒：開始前 6 小時內無法取消。"
             ),
+            sync_line=True,
         )
 
         return jsonify({
@@ -1881,6 +1882,7 @@ def admin_create_booking():
                 f"✅ 預約成功\n課程：{target_class['name']}\n時間：{class_datetime}\n"
                 f"剩餘堂數：{new_credits} 堂\n提醒：開始前 6 小時內無法取消。"
             ),
+            sync_line=True,
         )
 
         return jsonify({
