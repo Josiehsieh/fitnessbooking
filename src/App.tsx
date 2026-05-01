@@ -13,7 +13,7 @@ import LineLoginScreen from './screens/LineLoginScreen';
 import GoogleLoginScreen from './screens/GoogleLoginScreen';
 import AdminScreen from './screens/AdminScreen';
 import PaymentPendingScreen from './screens/PaymentPendingScreen';
-import { User, ClassItem, BookingResult, Order, PaymentInfo, saveToken, clearToken } from './api/client';
+import { User, ClassItem, BookingResult, Order, PaymentInfo, saveToken, clearToken, api } from './api/client';
 
 export type Screen =
   | 'login'
@@ -98,9 +98,14 @@ export default function App() {
     }
   };
 
-  const handleBookingComplete = (result: BookingResult, updatedCredits: number) => {
+  const handleBookingComplete = async (result: BookingResult, updatedCredits: number) => {
     setBookingResult(result);
-    if (user) setUser({ ...user, credits: updatedCredits });
+    try {
+      const me = await api.auth.getMe();
+      if (me?.user) setUser(me.user);
+    } catch {
+      if (user) setUser({ ...user, credits: updatedCredits });
+    }
     handleNavigate('confirmation');
   };
 
@@ -157,8 +162,13 @@ export default function App() {
               key="schedule"
               onNavigate={handleNavigate}
               onBookClass={handleBookClass}
-              onCreditsChanged={(credits) => {
-                if (user) setUser({ ...user, credits });
+              onCreditsChanged={async () => {
+                try {
+                  const me = await api.auth.getMe();
+                  if (me?.user) setUser(me.user);
+                } catch {
+                  /* ignore */
+                }
               }}
               user={user}
             />

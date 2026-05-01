@@ -427,20 +427,13 @@ def _default_expiry_for_quantity(quantity: int) -> str:
 
 
 def _credits_expired(user: dict) -> bool:
-    exp = str(user.get("credits_expire_at", "") or "").strip()
-    if not exp:
-        return False
-    try:
-        return datetime.date.fromisoformat(exp) < datetime.date.today()
-    except ValueError:
-        return False
+    """仍有「已過期但尚未清掉的批次餘額」（無任何可用堂數時用於提示重新購買）。"""
+    return _has_expired_inventory_with_balance(user)
 
 
 def _active_credits(user: dict) -> int:
-    if _credits_expired(user):
-        return 0
     try:
-        return int(user.get("credits", 0) or 0)
+        return _active_credits_from_lots(_load_credit_lots(user))
     except (ValueError, TypeError):
         return 0
 
@@ -460,16 +453,222 @@ def _has_confirmed_booking(bookings: list[dict], user_id: str, class_id: str) ->
 
 
 def _class_date_exceeds_credit_expiry(user: dict, class_date_str: str) -> bool:
-    """True when class date is later than user's credit expiry date."""
-    exp = str(user.get("credits_expire_at", "") or "").strip()
-    if not exp:
-        return False
+    """True when no credit lot can cover this class date (legacy + multi-batch)."""
     try:
-        exp_date = datetime.date.fromisoformat(exp)
         class_date = datetime.date.fromisoformat(str(class_date_str))
-        return class_date > exp_date
     except ValueError:
         return False
+    return _usable_credits_for_class_date(_load_credit_lots(user), class_date) < 1
+
+
+def _users_credit_lots_col() -> int:
+    return _users_col_index("credit_lots")
+
+
+def _normalize_credit_lot(lot: dict) -> dict:
+    return {
+        "order_id": str(lot.get("order_id", "") or ""),
+        "remaining": max(0, int(lot.get("remaining", 0) or 0)),
+        "expire_at": str(lot.get("expire_at", "") or "").strip(),
+    }
+
+
+def _prune_credit_lots(lots: list[dict]) -> list[dict]:
+    return [x for x in (_normalize_credit_lot(l) for l in lots) if x["remaining"] > 0]
+
+
+def _parse_stored_credit_lots(raw: str) -> list[dict]:
+    if not str(raw or "").strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return _prune_credit_lots([_normalize_credit_lot(x) for x in data if isinstance(x, dict)])
+
+
+def _load_credit_lots(user: dict) -> list[dict]:
+    """All credit batches: JSON column if present, else legacy credits + credits_expire_at."""
+    from_sheet = _parse_stored_credit_lots(str(user.get("credit_lots", "") or ""))
+    if from_sheet:
+        return from_sheet
+    c = int(user.get("credits", 0) or 0)
+    exp = str(user.get("credits_expire_at", "") or "").strip()
+    if c > 0:
+        return [{"order_id": "", "remaining": c, "expire_at": exp}]
+    return []
+
+
+def _active_credits_from_lots(lots: list[dict], today: datetime.date | None = None) -> int:
+    today = today or datetime.date.today()
+    total = 0
+    for lot in lots:
+        rem = int(lot.get("remaining", 0) or 0)
+        if rem <= 0:
+            continue
+        exp_s = str(lot.get("expire_at", "") or "").strip()
+        if exp_s:
+            try:
+                if datetime.date.fromisoformat(exp_s) < today:
+                    continue
+            except ValueError:
+                pass
+        total += rem
+    return total
+
+
+def _usable_credits_for_class_date(lots: list[dict], class_date: datetime.date, today: datetime.date | None = None) -> int:
+    """How many credits can book a class on `class_date` (each lot must cover that date)."""
+    today = today or datetime.date.today()
+    total = 0
+    for lot in lots:
+        rem = int(lot.get("remaining", 0) or 0)
+        if rem <= 0:
+            continue
+        exp_s = str(lot.get("expire_at", "") or "").strip()
+        if exp_s:
+            try:
+                exp_d = datetime.date.fromisoformat(exp_s)
+            except ValueError:
+                exp_d = None
+            if exp_d is not None:
+                if exp_d < today:
+                    continue
+                if class_date > exp_d:
+                    continue
+        total += rem
+    return total
+
+
+def _soonest_expiry_sort_key(exp_d: datetime.date | None) -> tuple:
+    """None / open-ended sorts last (use last)."""
+    if exp_d is None:
+        return (1, datetime.date.max)
+    return (0, exp_d)
+
+
+def _consume_one_credit_for_class(
+    lots: list[dict], class_date: datetime.date, today: datetime.date | None = None
+) -> tuple[list[dict] | None, str | None]:
+    """FIFO by soonest lot expiry among lots that cover class_date. Returns (new_lots, source_order_id)."""
+    today = today or datetime.date.today()
+    candidates: list[tuple[int, tuple, str]] = []
+    for i, lot in enumerate(lots):
+        lot = _normalize_credit_lot(lot)
+        rem = lot["remaining"]
+        if rem <= 0:
+            continue
+        exp_s = lot["expire_at"]
+        exp_d: datetime.date | None
+        if exp_s:
+            try:
+                exp_d = datetime.date.fromisoformat(exp_s)
+            except ValueError:
+                exp_d = None
+        else:
+            exp_d = None
+        if exp_d is not None:
+            if exp_d < today:
+                continue
+            if class_date > exp_d:
+                continue
+        key = _soonest_expiry_sort_key(exp_d)
+        candidates.append((i, key, lot["order_id"]))
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda x: (x[1], x[0]))
+    pick_idx = candidates[0][0]
+    new_lots = [_normalize_credit_lot(dict(l)) for l in lots]
+    src_oid = str(new_lots[pick_idx].get("order_id", "") or "")
+    new_lots[pick_idx] = dict(new_lots[pick_idx])
+    new_lots[pick_idx]["remaining"] = int(new_lots[pick_idx]["remaining"]) - 1
+    return _prune_credit_lots(new_lots), src_oid
+
+
+def _refund_credit_to_lot(lots: list[dict], source_order_id: str) -> list[dict]:
+    """Return credit to the batch it was taken from (or legacy fallback)."""
+    oid = str(source_order_id or "").strip()
+    new_lots = [_normalize_credit_lot(dict(l)) for l in lots]
+    if oid:
+        for l in new_lots:
+            if str(l.get("order_id", "") or "") == oid:
+                l["remaining"] = int(l.get("remaining", 0) or 0) + 1
+                return new_lots
+    for l in new_lots:
+        if str(l.get("order_id", "") or "") == "":
+            l["remaining"] = int(l.get("remaining", 0) or 0) + 1
+            return new_lots
+    new_lots.append({"order_id": "", "remaining": 1, "expire_at": ""})
+    return new_lots
+
+
+def _credit_lots_summary_expiry(lots: list[dict], today: datetime.date | None = None) -> str:
+    """Earliest expiry among currently usable credits (for single-date UI hint)."""
+    today = today or datetime.date.today()
+    dates: list[datetime.date] = []
+    for lot in lots:
+        rem = int(lot.get("remaining", 0) or 0)
+        if rem <= 0:
+            continue
+        exp_s = str(lot.get("expire_at", "") or "").strip()
+        if not exp_s:
+            continue
+        try:
+            exp_d = datetime.date.fromisoformat(exp_s)
+        except ValueError:
+            continue
+        if exp_d >= today:
+            dates.append(exp_d)
+    return min(dates).isoformat() if dates else ""
+
+
+def _persist_user_credit_state(users_ws, user_row: int, lots: list[dict], user_id: str) -> None:
+    """Write credit_lots JSON + denormalized credits + summary credits_expire_at."""
+    lots = _prune_credit_lots(lots)
+    today = datetime.date.today()
+    active_total = _active_credits_from_lots(lots, today)
+    summary_exp = _credit_lots_summary_expiry(lots, today)
+    payload = json.dumps(
+        [{"order_id": l["order_id"], "remaining": l["remaining"], "expire_at": l["expire_at"]} for l in lots],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    expire_col = _users_expire_col()
+    lots_col = _users_credit_lots_col()
+    _batch_write_cells(users_ws, [
+        (user_row, 5, active_total),
+        (user_row, expire_col, summary_exp),
+        (user_row, lots_col, payload),
+    ])
+    _patch_cache_row(
+        "Users",
+        lambda u, uid=str(user_id): str(u.get("user_id")) == uid,
+        {"credits": active_total, "credits_expire_at": summary_exp, "credit_lots": payload},
+    )
+
+
+def _has_expired_inventory_with_balance(user: dict) -> bool:
+    """True when lots hold remaining credits but every remaining lot is past expiry."""
+    lots = _load_credit_lots(user)
+    today = datetime.date.today()
+    buried = 0
+    for lot in lots:
+        rem = int(lot.get("remaining", 0) or 0)
+        if rem <= 0:
+            continue
+        exp_s = str(lot.get("expire_at", "") or "").strip()
+        if not exp_s:
+            return False
+        try:
+            exp_d = datetime.date.fromisoformat(exp_s)
+        except ValueError:
+            return False
+        if exp_d >= today:
+            return False
+        buried += rem
+    return buried > 0
 
 
 def _users_col_index(header_name: str) -> int:
@@ -488,17 +687,51 @@ def _users_expire_col() -> int:
     return _users_col_index("credits_expire_at")
 
 
+def _bookings_header_list(ws) -> list[str]:
+    headers = [str(h).strip() for h in ws.row_values(1) if str(h).strip()]
+    if "credit_source_order_id" not in headers:
+        ws.update_cell(1, len(headers) + 1, "credit_source_order_id")
+        headers = [str(h).strip() for h in ws.row_values(1) if str(h).strip()]
+    return headers
+
+
+def _booking_append_row(ws, values: dict) -> None:
+    headers = _bookings_header_list(ws)
+    ws.append_row([values.get(h, "") for h in headers])
+
+
 def _user_response(u: dict) -> dict:
     """Consistent user payload for API responses."""
-    credits = _active_credits(u)
     email = str(u.get("email", "") or "")
     is_placeholder_email = email.endswith("@line.placeholder") or email.endswith("@google.placeholder")
+    lots = _load_credit_lots(u)
+    today = datetime.date.today()
+    credits = _active_credits_from_lots(lots, today)
+    summary_exp = _credit_lots_summary_expiry(lots, today)
+    active_lots: list[dict] = []
+    for lot in lots:
+        rem = int(lot.get("remaining", 0) or 0)
+        if rem <= 0:
+            continue
+        exp_s = str(lot.get("expire_at", "") or "").strip()
+        if exp_s:
+            try:
+                if datetime.date.fromisoformat(exp_s) < today:
+                    continue
+            except ValueError:
+                pass
+        active_lots.append({
+            "order_id": str(lot.get("order_id", "") or ""),
+            "remaining": rem,
+            "expire_at": exp_s,
+        })
     return {
         "id": str(u.get("user_id", "")),
         "email": email,
         "name": u.get("name", ""),
         "credits": credits,
-        "credits_expire_at": str(u.get("credits_expire_at", "") or "") if credits > 0 else "",
+        "credits_expire_at": summary_exp if credits > 0 else "",
+        "credit_lots": active_lots,
         "has_password": bool(u.get("password_hash", "")),
         "has_real_email": bool(email) and not is_placeholder_email,
         "line_linked": bool(str(u.get("line_user_id", "") or "")),
@@ -933,14 +1166,14 @@ def create_booking():
         if int(target["booked_spots"]) >= int(target["total_spots"]):
             return jsonify({"error": "此課程已額滿"}), 400
 
-        if _credits_expired(user):
+        if _credits_expired(user) and _active_credits(user) < 1:
             return jsonify({"error": "您的堂數已過期，請重新購買", "code": "EXPIRED"}), 400
 
         if _active_credits(user) < 1:
             return jsonify({"error": "堂數不足，請先購買套票", "code": "NO_CREDITS"}), 400
 
         if _class_date_exceeds_credit_expiry(user, str(target.get("date", ""))):
-            return jsonify({"error": "此課程日期已超過您的堂數有效期限，請先購買或延長效期", "code": "EXPIRE_BEFORE_CLASS"}), 400
+            return jsonify({"error": "此課程日期已超過您目前可用批次的有效期限，請先購買可涵蓋該日的堂數", "code": "EXPIRE_BEFORE_CLASS"}), 400
 
         bookings_ws = _ws("Bookings")
         bookings = _cached_records("Bookings")
@@ -952,22 +1185,29 @@ def create_booking():
         now = datetime.datetime.now().isoformat()
         class_datetime = f"{target['date']} {target['time']}"
 
-        bookings_ws.append_row([
-            booking_id,
-            str(user["user_id"]),
-            class_id,
-            target["name"],
-            class_datetime,
-            "confirmed",
-            now,
-        ])
+        lots = _load_credit_lots(user)
+        today = datetime.date.today()
+        class_date = datetime.date.fromisoformat(str(target.get("date", "")))
+        new_lots, src_oid = _consume_one_credit_for_class(lots, class_date, today)
+        if new_lots is None:
+            return jsonify({"error": "扣堂失敗，請稍後再試", "code": "CREDIT_DEDUCT"}), 400
 
-        # Update booked spots
+        _booking_append_row(bookings_ws, {
+            "booking_id": booking_id,
+            "user_id": str(user["user_id"]),
+            "class_id": class_id,
+            "class_name": target["name"],
+            "class_datetime": class_datetime,
+            "status": "confirmed",
+            "created_at": now,
+            "credit_source_order_id": src_oid or "",
+        })
+
         classes_ws.update_cell(class_row, 8, int(target["booked_spots"]) + 1)
 
-        # Deduct one credit
-        new_credits = int(user["credits"]) - 1
-        _ws("Users").update_cell(user_row, 5, new_credits)
+        users_ws = _ws("Users")
+        _persist_user_credit_state(users_ws, user_row, new_lots, str(user["user_id"]))
+        new_credits = _active_credits_from_lots(new_lots, today)
         _invalidate_cache("Users", "Classes", "Bookings")
 
         _notify(
@@ -1053,9 +1293,12 @@ def cancel_booking(booking_id):
                         classes_ws.update_cell(j + 2, 8, new_spots)
                         break
 
-                # Refund credit (expiry date stays the same)
-                new_credits = int(user.get("credits", 0)) + 1
-                _ws("Users").update_cell(user_row, 5, new_credits)
+                src_oid = str(b.get("credit_source_order_id", "") or "").strip()
+                lots = _load_credit_lots(user)
+                new_lots = _refund_credit_to_lot(lots, src_oid)
+                users_ws = _ws("Users")
+                _persist_user_credit_state(users_ws, user_row, new_lots, str(user["user_id"]))
+                new_credits = _active_credits_from_lots(new_lots, datetime.date.today())
                 _invalidate_cache("Users", "Classes", "Bookings")
 
                 _notify(
@@ -1312,16 +1555,10 @@ def _upsert_oauth_user(
                 if not _bool_cell(u.get("notify_line"), default=False):
                     ws.update_cell(row, notify_line_col, "TRUE")
             _invalidate_cache("Users")
-            return (
-                {
-                    "id": str(u["user_id"]),
-                    "email": u["email"],
-                    "name": u["name"],
-                    "credits": int(u.get("credits", 0)),
-                },
-                token,
-                False,
-            )
+            fresh = dict(u)
+            if line_user_id and not str(fresh.get("line_user_id", "") or ""):
+                fresh["line_user_id"] = line_user_id
+            return (_user_response(fresh), token, False)
 
     # New user – credits start at 0, must be purchased via orders
     user_id = provider_uid
@@ -1337,7 +1574,16 @@ def _upsert_oauth_user(
         ws.update_cell(new_row, notify_line_col, "TRUE")
     _invalidate_cache("Users")
     return (
-        {"id": user_id, "email": email, "name": name, "credits": 0},
+        _user_response({
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "credits": 0,
+            "credits_expire_at": "",
+            "password_hash": "",
+            "credit_lots": "",
+            "line_user_id": line_user_id or "",
+        }),
         token,
         True,
     )
@@ -1541,18 +1787,37 @@ def admin_list_users():
     try:
         users = _cached_records("Users")
         # 不回傳密碼 hash 與 token
-        safe = [
-            {
+        safe = []
+        today = datetime.date.today()
+        for u in users:
+            lots = _load_credit_lots(u)
+            active_lots = []
+            for lot in lots:
+                rem = int(lot.get("remaining", 0) or 0)
+                if rem <= 0:
+                    continue
+                exp_s = str(lot.get("expire_at", "") or "").strip()
+                if exp_s:
+                    try:
+                        if datetime.date.fromisoformat(exp_s) < today:
+                            continue
+                    except ValueError:
+                        pass
+                active_lots.append({
+                    "order_id": str(lot.get("order_id", "") or ""),
+                    "remaining": rem,
+                    "expire_at": exp_s,
+                })
+            safe.append({
                 "user_id": u.get("user_id"),
                 "email": u.get("email"),
                 "name": u.get("name"),
-                "credits": int(u.get("credits", 0) or 0),
-                "credits_expire_at": str(u.get("credits_expire_at", "") or ""),
-                "expired": _credits_expired(u),
+                "credits": _active_credits(u),
+                "credits_expire_at": _credit_lots_summary_expiry(lots, today),
+                "credit_lots": active_lots,
+                "expired": _has_expired_inventory_with_balance(u),
                 "created_at": u.get("created_at"),
-            }
-            for u in users
-        ]
+            })
         return jsonify({"users": safe, "total": len(safe)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1595,24 +1860,39 @@ def admin_update_credits(user_id):
         for i, u in enumerate(users):
             if str(u.get("user_id")) == str(user_id):
                 row = i + 2
-                cell_updates: list = []
-                patch: dict = {}
-                if new_credits is not None:
-                    cell_updates.append((row, 5, new_credits))
-                    patch["credits"] = new_credits
-                if new_expire is not None:
-                    cell_updates.append((row, _users_expire_col(), new_expire))
-                    patch["credits_expire_at"] = new_expire
-                _batch_write_cells(ws, cell_updates)
-                _patch_cache_row(
-                    "Users",
-                    lambda r, uid=str(user_id): str(r.get("user_id")) == uid,
-                    patch,
-                )
+                lots = _load_credit_lots(u)
+                if new_credits is not None and new_expire is not None:
+                    lots = [_normalize_credit_lot({
+                        "order_id": "manual",
+                        "remaining": new_credits,
+                        "expire_at": new_expire,
+                    })]
+                elif new_credits is not None:
+                    keep_exp = str(u.get("credits_expire_at", "") or "").strip()
+                    lots = [_normalize_credit_lot({
+                        "order_id": "manual",
+                        "remaining": new_credits,
+                        "expire_at": keep_exp,
+                    })]
+                elif new_expire is not None:
+                    lots = [dict(l) for l in lots]
+                    if lots:
+                        for lot in lots:
+                            lot["expire_at"] = new_expire
+                    else:
+                        lots = [_normalize_credit_lot({
+                            "order_id": "manual",
+                            "remaining": int(u.get("credits", 0) or 0),
+                            "expire_at": new_expire,
+                        })]
+                _persist_user_credit_state(ws, row, lots, str(user_id))
+                today = datetime.date.today()
+                out_credits = _active_credits_from_lots(lots, today)
+                out_expire = _credit_lots_summary_expiry(lots, today)
                 return jsonify({
                     "message": "會員資料已更新",
-                    "credits": new_credits if new_credits is not None else int(u.get("credits", 0) or 0),
-                    "credits_expire_at": new_expire if new_expire is not None else str(u.get("credits_expire_at", "") or ""),
+                    "credits": out_credits,
+                    "credits_expire_at": out_expire,
                 })
         return jsonify({"error": "找不到使用者"}), 404
     except Exception as e:
@@ -1873,32 +2153,41 @@ def admin_create_booking():
         if _has_confirmed_booking(bookings, user_id, class_id):
             return jsonify({"error": "同一堂課每位會員限預約一次", "code": "DUPLICATE_BOOKING"}), 400
 
-        if _credits_expired(target_user):
+        if _credits_expired(target_user) and _active_credits(target_user) < 1:
             return jsonify({"error": "會員堂數已過期，請先處理堂數效期"}), 400
 
-        current_credits = _active_credits(target_user)
-        if current_credits < 1:
+        if _active_credits(target_user) < 1:
             return jsonify({"error": "會員堂數不足，無法代為預約"}), 400
 
         if _class_date_exceeds_credit_expiry(target_user, str(target_class.get("date", ""))):
-            return jsonify({"error": "此課程日期已超過會員堂數有效期限，請先延長效期"}), 400
+            return jsonify({"error": "此課程日期已超過會員目前可用批次的有效期限"}), 400
 
         booking_id = secrets.token_hex(8)
         now = datetime.datetime.now().isoformat()
         class_datetime = f"{target_class['date']} {target_class['time']}"
 
-        _ws("Bookings").append_row([
-            booking_id,
-            user_id,
-            class_id,
-            target_class["name"],
-            class_datetime,
-            "confirmed",
-            now,
-        ])
+        lots = _load_credit_lots(target_user)
+        today = datetime.date.today()
+        class_date = datetime.date.fromisoformat(str(target_class.get("date", "")))
+        new_lots, src_oid = _consume_one_credit_for_class(lots, class_date, today)
+        if new_lots is None:
+            return jsonify({"error": "扣堂失敗，請稍後再試"}), 500
+
+        bookings_ws = _ws("Bookings")
+        _booking_append_row(bookings_ws, {
+            "booking_id": booking_id,
+            "user_id": user_id,
+            "class_id": class_id,
+            "class_name": target_class["name"],
+            "class_datetime": class_datetime,
+            "status": "confirmed",
+            "created_at": now,
+            "credit_source_order_id": src_oid or "",
+        })
         classes_ws.update_cell(class_row, 8, int(target_class.get("booked_spots", 0) or 0) + 1)
-        new_credits = int(target_user.get("credits", 0) or 0) - 1
-        _ws("Users").update_cell(user_row, 5, new_credits)
+        users_ws = _ws("Users")
+        _persist_user_credit_state(users_ws, user_row, new_lots, user_id)
+        new_credits = _active_credits_from_lots(new_lots, today)
         _invalidate_cache("Users", "Classes", "Bookings")
 
         _notify(
@@ -1959,17 +2248,23 @@ def admin_cancel_booking(booking_id):
                     classes_ws.update_cell(j + 2, 8, new_spots)
                     break
 
-            # Refund one credit to the booking owner
             users_ws = _ws("Users")
             users = _cached_records("Users")
             target_user = None
-            new_credits = None
+            owner_row = None
             for j, u in enumerate(users):
                 if str(u.get("user_id")) == str(b.get("user_id")):
                     target_user = u
-                    new_credits = int(u.get("credits", 0) or 0) + 1
-                    users_ws.update_cell(j + 2, 5, new_credits)
+                    owner_row = j + 2
                     break
+
+            new_credits = None
+            if target_user is not None and owner_row is not None:
+                src_oid = str(b.get("credit_source_order_id", "") or "").strip()
+                lots = _load_credit_lots(target_user)
+                new_lots = _refund_credit_to_lot(lots, src_oid)
+                _persist_user_credit_state(users_ws, owner_row, new_lots, str(b.get("user_id")))
+                new_credits = _active_credits_from_lots(new_lots, datetime.date.today())
 
             _invalidate_cache("Users", "Classes", "Bookings")
 
@@ -2009,14 +2304,12 @@ def admin_list_orders():
 
 @app.route("/api/admin/orders/<order_id>/confirm", methods=["POST"])
 def admin_confirm_order(order_id):
-    """確認訂單付款：訂單狀態 → paid，並將堂數加到使用者帳戶（含到期日）。
+    """確認訂單付款：訂單狀態 → paid，本筆堂數與有效期限獨立成一批次（不與舊堂數合併效期）。
 
     Optional JSON body:
-        credits_expire_at:  ISO date (YYYY-MM-DD) override for this batch's
-                            expiry. If omitted, defaults to last day of the
-                            current month. If the user already has unexpired
-                            credits, the final expiry will be max(override,
-                            existing) so their other credits don't get cut short.
+        credits_expire_at:  ISO date (YYYY-MM-DD) override for *this order's*
+                            batch only. If omitted, defaults from堂數規則
+                            （1–8 堂：當月底；9 堂以上：自今日起兩個月）。
     """
     admin, _ = _admin_required()
     if not admin:
@@ -2060,49 +2353,26 @@ def admin_confirm_order(order_id):
                 return jsonify({"error": "找不到訂單對應的使用者"}), 404
 
             quantity = int(o.get("quantity", 0) or 0)
-            # Expiry for this batch: admin override takes priority, otherwise
-            # fall back to quantity-based default.
-            new_expiry = override_expiry or _default_expiry_for_quantity(quantity)
+            batch_expiry = override_expiry or _default_expiry_for_quantity(quantity)
+            lots = list(_load_credit_lots(target_user))
+            lots.append(_normalize_credit_lot({
+                "order_id": str(order_id),
+                "remaining": quantity,
+                "expire_at": batch_expiry,
+            }))
 
-            current_credits = int(target_user.get("credits", 0) or 0)
-            if _credits_expired(target_user):
-                current_credits = 0
-
-            new_credits = current_credits + quantity
-
-            current_expiry = str(target_user.get("credits_expire_at", "") or "").strip()
-            if current_expiry and not _credits_expired(target_user):
-                try:
-                    final_expiry = max(
-                        datetime.date.fromisoformat(current_expiry),
-                        datetime.date.fromisoformat(new_expiry),
-                    ).isoformat()
-                except ValueError:
-                    final_expiry = new_expiry
-            else:
-                final_expiry = new_expiry
-
-            expire_col = _users_expire_col()
-            # Single batched write for both the user row updates (credits +
-            # expire date) and the order row updates (status + paid_at).
             now = datetime.datetime.now().isoformat()
             user_target_uid = str(target_user.get("user_id"))
             order_row = i + 2
-            _batch_write_cells(users_ws, [
-                (user_row, 5, new_credits),
-                (user_row, expire_col, final_expiry),
-            ])
+            _persist_user_credit_state(users_ws, user_row, lots, user_target_uid)
+            today = datetime.date.today()
+            new_credits = _active_credits_from_lots(lots, today)
+            summary_exp = _credit_lots_summary_expiry(lots, today)
+
             _batch_write_cells(ws, [
                 (order_row, ORDER_COL["status"], "paid"),
                 (order_row, ORDER_COL["paid_at"], now),
             ])
-
-            # Patch caches in-place so subsequent reads don't refetch.
-            _patch_cache_row(
-                "Users",
-                lambda u, uid=user_target_uid: str(u.get("user_id")) == uid,
-                {"credits": new_credits, "credits_expire_at": final_expiry},
-            )
             _patch_cache_row(
                 "Orders",
                 lambda r, oid=str(order_id): str(r.get("order_id")) == oid,
@@ -2113,10 +2383,10 @@ def admin_confirm_order(order_id):
             _notify(
                 target_user,
                 f"付款已確認｜堂數已加入（+{quantity} 堂）",
-                _order_confirmed_email_html(quantity, order_total, final_expiry, new_credits),
+                _order_confirmed_email_html(quantity, order_total, batch_expiry, new_credits),
                 line_text=(
-                    f"🎉 付款已確認！\n本次購買 {quantity} 堂（NT${order_total:,}）已加入您的帳戶。\n"
-                    f"目前總堂數：{new_credits} 堂\n有效期至：{final_expiry}\n\n快到官網預約課程吧！"
+                    f"🎉 付款已確認！\n本次購買 {quantity} 堂（NT${order_total:,}），本筆效期至 {batch_expiry}。\n"
+                    f"目前帳戶可用總堂數：{new_credits} 堂\n\n快到官網預約課程吧！"
                 ),
                 sync_line=True,
             )
@@ -2125,7 +2395,7 @@ def admin_confirm_order(order_id):
                 "message": "訂單已確認，堂數已發放",
                 "user_id": str(o.get("user_id")),
                 "credits": new_credits,
-                "credits_expire_at": final_expiry,
+                "credits_expire_at": summary_exp,
             })
 
         return jsonify({"error": "找不到此訂單"}), 404
@@ -2292,7 +2562,7 @@ def admin_stats():
         booked_spots = sum(int(c.get("booked_spots", 0) or 0) for c in classes)
         occupancy = round(booked_spots / total_spots * 100, 1) if total_spots else 0
 
-        total_credits_held = sum(int(u.get("credits", 0) or 0) for u in users if not _credits_expired(u))
+        total_credits_held = sum(_active_credits(u) for u in users)
 
         return jsonify({
             "total_users": len(users),
@@ -2383,7 +2653,10 @@ def seed_data():
         # Bookings sheet
         bookings_ws = get_or_create("Bookings")
         bookings_ws.clear()
-        bookings_ws.append_row(["booking_id", "user_id", "class_id", "class_name", "class_datetime", "status", "created_at"])
+        bookings_ws.append_row([
+            "booking_id", "user_id", "class_id", "class_name", "class_datetime",
+            "status", "created_at", "credit_source_order_id",
+        ])
 
         return jsonify({
             "message": "資料初始化完成！",

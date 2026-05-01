@@ -174,16 +174,21 @@ export default function CheckoutScreen({
             <div className="bg-secondary-container/30 rounded-2xl p-5 flex items-center gap-4">
               <CheckCircle2 className="w-6 h-6 text-secondary shrink-0" />
               <div className="flex-1">
-                <p className="font-bold text-on-surface">
-                  您有 {user?.credits} 堂可用
-                  {user?.credits_expire_at && (
-                    <span className="text-sm font-normal text-on-surface-variant ml-2">
-                      （有效期至 {user.credits_expire_at}）
-                    </span>
-                  )}
-                </p>
-                <p className="text-sm text-on-surface-variant">
-                  系統將扣除 1 堂後完成預約，無需額外付款
+                <p className="font-bold text-on-surface">您有 {user?.credits} 堂可用（各批效期可能不同）</p>
+                {user?.credit_lots && user.credit_lots.length > 0 ? (
+                  <ul className="mt-2 text-sm text-on-surface-variant space-y-0.5">
+                    {user.credit_lots.map((lot, i) => (
+                      <li key={`${lot.order_id || 'c'}-${i}`}>
+                        {lot.remaining} 堂
+                        {lot.expire_at ? ` · 效期至 ${lot.expire_at}` : ''}
+                      </li>
+                    ))}
+                  </ul>
+                ) : user?.credits_expire_at ? (
+                  <p className="mt-1 text-sm text-on-surface-variant">有效期至 {user.credits_expire_at}</p>
+                ) : null}
+                <p className="text-sm text-on-surface-variant mt-2">
+                  扣堂時會優先使用「效期較近」的批次；課程日須落在該批次的效期內。
                 </p>
               </div>
             </div>

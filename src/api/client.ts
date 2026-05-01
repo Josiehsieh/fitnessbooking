@@ -2,12 +2,21 @@
 // In local dev, Vite proxies /api → http://localhost:5000
 const BASE = "";
 
+/** 單筆訂單／批次堂數與其有效期限（與其他批次分開計算） */
+export interface CreditLot {
+  order_id: string;
+  remaining: number;
+  expire_at: string;
+}
+
 export interface User {
   id: string;
   email: string;
   name: string;
   credits: number;
   credits_expire_at?: string;
+  /** 目前仍有效、可預約的批次明細；有多筆時每筆效期可能不同 */
+  credit_lots?: CreditLot[];
   has_password?: boolean;
   has_real_email?: boolean;
   line_linked?: boolean;
@@ -284,6 +293,7 @@ export const api = {
           name: string;
           credits: number;
           credits_expire_at?: string;
+          credit_lots?: CreditLot[];
           expired?: boolean;
           created_at: string;
         }>;

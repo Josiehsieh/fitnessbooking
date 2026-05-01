@@ -7,7 +7,7 @@ import { api, ClassItem, User } from '../api/client';
 interface ScheduleScreenProps {
   onNavigate: (screen: Screen) => void;
   onBookClass: (cls: ClassItem) => void;
-  onCreditsChanged: (credits: number) => void;
+  onCreditsChanged: (creditsRemaining: number) => void;
   user: User | null;
 }
 
@@ -87,7 +87,12 @@ export default function ScheduleScreen({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [bookingId, setBookingId] = useState<string | null>(null);
-  const [successToast, setSuccessToast] = useState<{ name: string; time: string; day: string } | null>(null);
+  const [successToast, setSuccessToast] = useState<{
+    name: string;
+    time: string;
+    day: string;
+    creditsRemaining: number;
+  } | null>(null);
   const [bookError, setBookError] = useState('');
 
   const now = new Date();
@@ -148,7 +153,12 @@ export default function ScheduleScreen({
         })),
       );
 
-      setSuccessToast({ name: cls.name, time: cls.time, day: cls.day_label });
+      setSuccessToast({
+        name: cls.name,
+        time: cls.time,
+        day: cls.day_label,
+        creditsRemaining: res.credits_remaining,
+      });
       onCreditsChanged(res.credits_remaining);
     } catch (err) {
       setBookError(err instanceof Error ? err.message : '預約失敗，請再試一次');
@@ -180,7 +190,7 @@ export default function ScheduleScreen({
                 {successToast.day} · {successToast.time} · {successToast.name}
               </p>
               <p className="text-xs text-on-secondary-container/70 mt-1">
-                已扣除 1 堂，剩餘 {user?.credits ?? 0} 堂。可於「我的課表」查看預約
+                已扣除 1 堂，剩餘 {successToast.creditsRemaining} 堂。可於「我的課表」查看預約
               </p>
             </div>
             <button

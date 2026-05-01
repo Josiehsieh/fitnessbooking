@@ -309,15 +309,27 @@ function UsersTab() {
                 <td className="px-4 py-3">{u.name || '—'}</td>
                 <td className="px-4 py-3 text-right font-bold text-primary">
                   {u.credits}
-                  {u.expired && u.credits > 0 && (
-                    <span className="ml-2 text-[10px] font-normal px-1.5 py-0.5 rounded bg-red-100 text-red-700">已過期</span>
+                  {u.expired && (
+                    <span className="ml-2 text-[10px] font-normal px-1.5 py-0.5 rounded bg-red-100 text-red-700">
+                      尚有過期批次
+                    </span>
                   )}
                 </td>
                 <td className="px-4 py-3 hidden md:table-cell text-xs">
                   <div className="flex items-center gap-2">
-                    <span className={u.expired && u.credits > 0 ? 'text-red-600 font-semibold' : 'text-on-surface-variant'}>
-                      {u.credits_expire_at || '—'}
-                    </span>
+                    <div className={u.expired ? 'text-red-600 font-semibold' : 'text-on-surface-variant'}>
+                      {u.credit_lots && u.credit_lots.length > 0 ? (
+                        <ul className="space-y-1">
+                          {u.credit_lots.map((lot, i) => (
+                            <li key={`${lot.order_id}-${i}`}>
+                              {lot.remaining} 堂 → {lot.expire_at || '—'}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <span>{u.credits_expire_at || '—'}</span>
+                      )}
+                    </div>
                     <button
                       disabled={saving === u.user_id}
                       onClick={() => handleSetExpiry(u.user_id, u.credits_expire_at)}

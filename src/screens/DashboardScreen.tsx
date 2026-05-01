@@ -74,7 +74,9 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
   const lastRefreshRef = useRef(0);
 
   const credits = user?.credits ?? 0;
-  const expireNotice = formatExpireNotice(user?.credits_expire_at);
+  const creditBatches = user?.credit_lots;
+  const expireNotice =
+    !creditBatches?.length ? formatExpireNotice(user?.credits_expire_at) : null;
   const hasPendingOrder = orders.some((o) => o.status === 'pending');
 
   // Upcoming = class hasn't started yet; History = class_datetime is in the past.
@@ -149,7 +151,8 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
     try {
       const res = await api.bookings.cancel(bookingId);
       setBookings((prev) => prev.filter((b) => b.booking_id !== bookingId));
-      if (user) onUserUpdated({ ...user, credits: res.credits });
+      const me = await api.auth.getMe();
+      if (me?.user) onUserUpdated(me.user);
       alert(`課程已取消，堂數已退還。目前剩餘：${res.credits} 堂`);
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : '取消失敗');
@@ -222,7 +225,25 @@ export default function DashboardScreen({ onNavigate, user, onLogout, onUserUpda
               </p>
             )}
 
-            {expireNotice && (
+            {creditBatches && creditBatches.length > 0 && (
+              <div className="mt-6 px-4 py-3 rounded-2xl bg-surface-container text-on-surface-variant border border-outline-variant/10">
+                <p className="text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-2">
+                  依購買批次（堂數與效期分開計算）
+                </p>
+                <ul className="text-sm space-y-1.5 font-medium">
+                  {creditBatches.map((lot, i) => (
+                    <li key={`${lot.order_id || 'lot'}-${i}`}>
+                      <span className="text-primary font-bold">{lot.remaining}</span> 堂
+                      {lot.expire_at ? (
+                        <span className="text-on-surface-variant"> · 效期至 {lot.expire_at}</span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {!creditBatches?.length && expireNotice && (
               <div className={`mt-6 flex items-center gap-2 px-4 py-3 rounded-2xl ${
                 expireNotice.urgent
                   ? 'bg-amber-50 text-amber-800 border border-amber-200'
