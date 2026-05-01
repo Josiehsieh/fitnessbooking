@@ -129,7 +129,7 @@ export default function ScheduleScreen({
     }
 
     if ((user.credits ?? 0) < 1) {
-      onBookClass(cls);
+      setBookError('請先購買堂數後再點擊預約的課程。');
       return;
     }
 

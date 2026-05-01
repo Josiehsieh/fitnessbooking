@@ -25,6 +25,21 @@ function calcPrice(qty: number, couponApplied: boolean, bulkDiscountEligible: bo
   return { subtotal, bulkDiscount, couponDiscount, discount, total: Math.max(0, subtotal - discount) };
 }
 
+/** 依本機日曆月：是否已有未取消且滿 BULK_MIN 堂的訂單（後端以伺服器月份為準）。 */
+function hasUsedBulkDiscountThisMonth(orders: Order[], bulkMin: number): boolean {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  return orders.some((o) => {
+    if (o.status === 'cancelled') return false;
+    if (Number(o.quantity || 0) < bulkMin) return false;
+    const t = Date.parse(o.created_at);
+    if (Number.isNaN(t)) return false;
+    const d = new Date(t);
+    return d.getFullYear() === y && d.getMonth() === m;
+  });
+}
+
 export default function CheckoutScreen({
   onNavigate,
   selectedClass,
@@ -50,10 +65,7 @@ export default function CheckoutScreen({
       try {
         const res = await api.orders.listMine();
         if (!alive) return;
-        const used = res.orders.some(
-          (o) => o.status !== 'cancelled' && Number(o.quantity || 0) >= BULK_MIN
-        );
-        setBulkDiscountEligible(!used);
+        setBulkDiscountEligible(!hasUsedBulkDiscountThisMonth(res.orders, BULK_MIN));
       } catch {
         // Keep optimistic default to avoid blocking checkout UI.
       }
@@ -183,7 +195,7 @@ export default function CheckoutScreen({
               <div>
                 <h2 className="text-xl font-bold text-on-surface mb-1">選擇購買堂數</h2>
                 <p className="text-sm text-on-surface-variant font-medium">
-                  每堂 NT${PRICE_PER_CLASS}・購買 {BULK_MIN} 堂以上可折 NT${BULK_DISCOUNT}（每帳號限一次）
+                  每堂 NT${PRICE_PER_CLASS}。課程 {BULK_MIN} 堂（含）以上折扣 NT${BULK_DISCOUNT}，每個帳號每個月限一次。
                 </p>
               </div>
 
@@ -239,7 +251,7 @@ export default function CheckoutScreen({
                   <div className="mt-6 flex items-center gap-3 bg-surface-container rounded-2xl px-5 py-3">
                     <AlertCircle className="w-4 h-4 text-on-surface-variant shrink-0" />
                     <p className="text-sm text-on-surface-variant font-medium">
-                      此帳號已使用過 {BULK_MIN} 堂折扣，這次不再折抵
+                      本月已使用過 {BULK_MIN} 堂折扣，這次不再折抵
                     </p>
                   </div>
                 ) : (

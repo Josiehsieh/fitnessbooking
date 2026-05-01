@@ -1078,7 +1078,7 @@ def cancel_booking(booking_id):
 
 
 # ── Packages ───────────────────────────────────────────────────────────────────
-# 定價規則：每堂 NT$150；一次購買 4 堂（含）以上，總價減 NT$20
+# 定價規則：每堂 NT$150；單筆購買 4 堂（含）以上總價減 NT$20（4 堂檔折扣，每帳號每月限一次，依訂單建立日曆月）
 
 PRICE_PER_CLASS = 150
 BULK_DISCOUNT_MIN = 4
@@ -1093,8 +1093,32 @@ def calc_price(quantity: int) -> dict:
     return {"subtotal": subtotal, "discount": discount, "total": total}
 
 
-def _has_used_bulk_discount(user_id: str) -> bool:
-    """是否已使用過「滿 4 堂折 NT$20」活動（每帳號限一次）。"""
+def _order_created_year_month(value) -> tuple[int, int] | None:
+    """Parse created_at into (year, month); None if missing or unparseable."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if len(raw) >= 7 and raw[4] == "-":
+        try:
+            y = int(raw[0:4])
+            mo = int(raw[5:7])
+            if 1900 <= y <= 2100 and 1 <= mo <= 12:
+                return (y, mo)
+        except ValueError:
+            pass
+    try:
+        dt = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        return (dt.year, dt.month)
+    except ValueError:
+        return None
+
+
+def _has_used_bulk_discount_this_month(user_id: str) -> bool:
+    """本月是否已使用過「滿 4 堂折 NT$20」（每帳號每月限一次，依伺服器日曆月）。"""
+    now = datetime.datetime.now()
+    current = (now.year, now.month)
     orders = _cached_records("Orders")
     for order in orders:
         if str(order.get("user_id")) != str(user_id):
@@ -1105,7 +1129,10 @@ def _has_used_bulk_discount(user_id: str) -> bool:
             quantity = int(order.get("quantity", 0) or 0)
         except (TypeError, ValueError):
             quantity = 0
-        if quantity >= BULK_DISCOUNT_MIN:
+        if quantity < BULK_DISCOUNT_MIN:
+            continue
+        ym = _order_created_year_month(order.get("created_at"))
+        if ym == current:
             return True
     return False
 
@@ -1171,7 +1198,7 @@ def create_order():
 
     subtotal = pricing["subtotal"]
     bulk_discount = pricing["discount"]
-    if bulk_discount > 0 and _has_used_bulk_discount(str(user["user_id"])):
+    if bulk_discount > 0 and _has_used_bulk_discount_this_month(str(user["user_id"])):
         bulk_discount = 0
     total_discount = bulk_discount + coupon_discount
     total = max(0, subtotal - total_discount)

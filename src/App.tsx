@@ -95,8 +95,6 @@ export default function App() {
     setSelectedClass(cls);
     if (!isLoggedIn) {
       handleNavigate('login');
-    } else {
-      handleNavigate('checkout');
     }
   };
 
