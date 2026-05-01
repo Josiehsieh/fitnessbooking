@@ -254,11 +254,34 @@ def _delete_cache_row(sheet_name: str, match) -> None:
     data[:] = [r for r in data if not match(r)]
 
 
+def _ensure_worksheet_grid(ws, min_rows: int = 1, min_cols: int = 1) -> None:
+    """Grow worksheet dimensions when a write would exceed the current grid.
+
+    Legacy sheets (e.g. Users created with cols=10) throw APIError 400 when
+    updating column K+; resize before writing.
+    """
+    if min_rows < 1:
+        min_rows = 1
+    if min_cols < 1:
+        min_cols = 1
+    cur_r = int(getattr(ws, "row_count", 0) or 0)
+    cur_c = int(getattr(ws, "col_count", 0) or 0)
+    need_r = max(cur_r, min_rows)
+    need_c = max(cur_c, min_cols)
+    if need_r > cur_r or need_c > cur_c:
+        ws.resize(rows=need_r, cols=need_c)
+
+
 def _batch_write_cells(ws, cell_updates) -> None:
     """Write multiple (row, col, value) updates in a SINGLE Sheets API call
     using batch_update. `cell_updates` is an iterable of (row, col, value).
     Using one batch call instead of N update_cell() calls saves N-1 write quota
     units; just as importantly it also avoids N sequential HTTP round-trips."""
+    cell_updates = list(cell_updates)
+    if cell_updates:
+        max_row = max(u[0] for u in cell_updates)
+        max_col = max(u[1] for u in cell_updates)
+        _ensure_worksheet_grid(ws, min_rows=max_row, min_cols=max_col)
     body = []
     for row, col, val in cell_updates:
         body.append({
@@ -678,6 +701,7 @@ def _users_col_index(header_name: str) -> int:
     if header_name in headers:
         return headers.index(header_name) + 1
     col = len(headers) + 1
+    _ensure_worksheet_grid(ws, min_rows=1, min_cols=col)
     ws.update_cell(1, col, header_name)
     return col
 
@@ -690,7 +714,9 @@ def _users_expire_col() -> int:
 def _bookings_header_list(ws) -> list[str]:
     headers = [str(h).strip() for h in ws.row_values(1) if str(h).strip()]
     if "credit_source_order_id" not in headers:
-        ws.update_cell(1, len(headers) + 1, "credit_source_order_id")
+        new_col = len(headers) + 1
+        _ensure_worksheet_grid(ws, min_rows=1, min_cols=new_col)
+        ws.update_cell(1, new_col, "credit_source_order_id")
         headers = [str(h).strip() for h in ws.row_values(1) if str(h).strip()]
     return headers
 
