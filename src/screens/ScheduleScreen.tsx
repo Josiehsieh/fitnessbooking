@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { ChevronLeft, ChevronRight, Info, CreditCard, UserCheck, AlertCircle, Loader2, CheckCircle2, X } from 'lucide-react';
 import { Screen } from '../App';
 import { api, ClassItem, User } from '../api/client';
+import { addDaysToISODate, getTaiwanTodayISO, getTaiwanYearMonth } from '../utils/taiwanTime';
 
 interface ScheduleScreenProps {
   onNavigate: (screen: Screen) => void;
@@ -95,21 +96,17 @@ export default function ScheduleScreen({
   } | null>(null);
   const [bookError, setBookError] = useState('');
 
-  const now = new Date();
-  const todayISO = toISODate(now);
-  const [calYear, setCalYear] = useState(now.getFullYear());
-  const [calMonth, setCalMonth] = useState(now.getMonth());
+  const todayISO = getTaiwanTodayISO();
+  const twYearMonth = getTaiwanYearMonth();
+  const [calYear, setCalYear] = useState(twYearMonth.year);
+  const [calMonth, setCalMonth] = useState(twYearMonth.monthIndex);
 
   useEffect(() => {
     api.classes.list()
       .then((res) => {
-        // 只顯示「今天」到「今天+42 天」之間的課程（未來六週）
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const maxDate = new Date(today);
-        maxDate.setDate(maxDate.getDate() + 42);
-        const fromISO = toISODate(today);
-        const toISO = toISODate(maxDate);
+        // 以台灣時區計算：只顯示「今天」到「今天+42 天」之間的課程（未來六週）
+        const fromISO = getTaiwanTodayISO();
+        const toISO = addDaysToISODate(fromISO, 42);
         const windowed = res.classes.filter(
           (c) => c.date >= fromISO && c.date <= toISO,
         );

@@ -51,6 +51,27 @@ def _safe(value):
         return [_safe(v) for v in value]
     return value
 
+
+# ── Taiwan time helpers ────────────────────────────────────────────────────────
+# 班級的 date / time 與堂數效期都以「台灣時間（UTC+8）」儲存，但伺服器（Vercel）
+# 是以 UTC 執行。若直接用 datetime.now() / date.today() 會比台灣慢 8 小時，導致：
+#   1. 開課前 6 小時的取消判斷錯誤（當天課程在 6 小時內仍可取消）。
+#   2. 堂數效期 / 課程日期在跨日、月底時判斷不準確。
+# 因此所有「現在時間 / 今天日期」的判斷都改用下列以台灣時區為準的輔助函式。
+
+TAIWAN_TZ = datetime.timezone(datetime.timedelta(hours=8))
+
+
+def _taiwan_now() -> datetime.datetime:
+    """Current wall-clock time in Taiwan (UTC+8) as a naive datetime."""
+    return datetime.datetime.now(TAIWAN_TZ).replace(tzinfo=None)
+
+
+def _taiwan_today() -> datetime.date:
+    """Current calendar date in Taiwan (UTC+8)."""
+    return _taiwan_now().date()
+
+
 SCOPES = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
@@ -422,7 +443,7 @@ def _set_setting(key: str, value: str):
 def _last_day_of_month(date_obj=None) -> str:
     """Returns ISO date (YYYY-MM-DD) of the last day of the given (or current) month."""
     from calendar import monthrange
-    d = date_obj or datetime.date.today()
+    d = date_obj or _taiwan_today()
     last = monthrange(d.year, d.month)[1]
     return datetime.date(d.year, d.month, last).isoformat()
 
@@ -443,7 +464,7 @@ def _default_expiry_for_quantity(quantity: int) -> str:
     - 1-8 classes: end of current month
     - >8 classes: two months from today
     """
-    today = datetime.date.today()
+    today = _taiwan_today()
     if quantity > 8:
         return _add_months(today, 2).isoformat()
     return _last_day_of_month(today)
@@ -525,7 +546,7 @@ def _load_credit_lots(user: dict) -> list[dict]:
 
 
 def _active_credits_from_lots(lots: list[dict], today: datetime.date | None = None) -> int:
-    today = today or datetime.date.today()
+    today = today or _taiwan_today()
     total = 0
     for lot in lots:
         rem = int(lot.get("remaining", 0) or 0)
@@ -544,7 +565,7 @@ def _active_credits_from_lots(lots: list[dict], today: datetime.date | None = No
 
 def _usable_credits_for_class_date(lots: list[dict], class_date: datetime.date, today: datetime.date | None = None) -> int:
     """How many credits can book a class on `class_date` (each lot must cover that date)."""
-    today = today or datetime.date.today()
+    today = today or _taiwan_today()
     total = 0
     for lot in lots:
         rem = int(lot.get("remaining", 0) or 0)
@@ -576,7 +597,7 @@ def _consume_one_credit_for_class(
     lots: list[dict], class_date: datetime.date, today: datetime.date | None = None
 ) -> tuple[list[dict] | None, str | None]:
     """FIFO by soonest lot expiry among lots that cover class_date. Returns (new_lots, source_order_id)."""
-    today = today or datetime.date.today()
+    today = today or _taiwan_today()
     candidates: list[tuple[int, tuple, str]] = []
     for i, lot in enumerate(lots):
         lot = _normalize_credit_lot(lot)
@@ -629,7 +650,7 @@ def _refund_credit_to_lot(lots: list[dict], source_order_id: str) -> list[dict]:
 
 def _credit_lots_summary_expiry(lots: list[dict], today: datetime.date | None = None) -> str:
     """Earliest expiry among currently usable credits (for single-date UI hint)."""
-    today = today or datetime.date.today()
+    today = today or _taiwan_today()
     dates: list[datetime.date] = []
     for lot in lots:
         rem = int(lot.get("remaining", 0) or 0)
@@ -650,7 +671,7 @@ def _credit_lots_summary_expiry(lots: list[dict], today: datetime.date | None = 
 def _persist_user_credit_state(users_ws, user_row: int, lots: list[dict], user_id: str) -> None:
     """Write credit_lots JSON + denormalized credits + summary credits_expire_at."""
     lots = _prune_credit_lots(lots)
-    today = datetime.date.today()
+    today = _taiwan_today()
     active_total = _active_credits_from_lots(lots, today)
     summary_exp = _credit_lots_summary_expiry(lots, today)
     payload = json.dumps(
@@ -675,7 +696,7 @@ def _persist_user_credit_state(users_ws, user_row: int, lots: list[dict], user_i
 def _has_expired_inventory_with_balance(user: dict) -> bool:
     """True when lots hold remaining credits but every remaining lot is past expiry."""
     lots = _load_credit_lots(user)
-    today = datetime.date.today()
+    today = _taiwan_today()
     buried = 0
     for lot in lots:
         rem = int(lot.get("remaining", 0) or 0)
@@ -731,7 +752,7 @@ def _user_response(u: dict) -> dict:
     email = str(u.get("email", "") or "")
     is_placeholder_email = email.endswith("@line.placeholder") or email.endswith("@google.placeholder")
     lots = _load_credit_lots(u)
-    today = datetime.date.today()
+    today = _taiwan_today()
     credits = _active_credits_from_lots(lots, today)
     summary_exp = _credit_lots_summary_expiry(lots, today)
     active_lots: list[dict] = []
@@ -1000,7 +1021,7 @@ def register():
 
         user_id = secrets.token_hex(8)
         token = secrets.token_hex(32)
-        now = datetime.datetime.now().isoformat()
+        now = _taiwan_now().isoformat()
         ws.append_row([user_id, email, _hash(password), name, 0, now, token])
         _invalidate_cache("Users")
 
@@ -1208,11 +1229,11 @@ def create_booking():
 
         # Create booking record
         booking_id = secrets.token_hex(8)
-        now = datetime.datetime.now().isoformat()
+        now = _taiwan_now().isoformat()
         class_datetime = f"{target['date']} {target['time']}"
 
         lots = _load_credit_lots(user)
-        today = datetime.date.today()
+        today = _taiwan_today()
         class_date = datetime.date.fromisoformat(str(target.get("date", "")))
         new_lots, src_oid = _consume_one_credit_for_class(lots, class_date, today)
         if new_lots is None:
@@ -1295,7 +1316,9 @@ def cancel_booking(booking_id):
                 if b.get("status") == "cancelled":
                     return jsonify({"error": "此預約已取消"}), 400
 
-                # 6-hour cancellation rule
+                # 6-hour cancellation rule.
+                # class_datetime 以台灣時間儲存，必須與「台灣現在時間」比較；
+                # 用伺服器 UTC 時間會慢 8 小時，導致 6 小時內的課程仍可取消。
                 class_dt = None
                 dt_str = str(b.get("class_datetime", ""))
                 for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S"):
@@ -1304,7 +1327,7 @@ def cancel_booking(booking_id):
                         break
                     except ValueError:
                         continue
-                if class_dt and class_dt - datetime.datetime.now() < datetime.timedelta(hours=6):
+                if class_dt and class_dt - _taiwan_now() < datetime.timedelta(hours=6):
                     return jsonify({"error": "課程開始前 6 小時內無法取消"}), 400
 
                 row_num = i + 2
@@ -1324,7 +1347,7 @@ def cancel_booking(booking_id):
                 new_lots = _refund_credit_to_lot(lots, src_oid)
                 users_ws = _ws("Users")
                 _persist_user_credit_state(users_ws, user_row, new_lots, str(user["user_id"]))
-                new_credits = _active_credits_from_lots(new_lots, datetime.date.today())
+                new_credits = _active_credits_from_lots(new_lots, _taiwan_today())
                 _invalidate_cache("Users", "Classes", "Bookings")
 
                 _notify(
@@ -1385,8 +1408,8 @@ def _order_created_year_month(value) -> tuple[int, int] | None:
 
 
 def _has_used_bulk_discount_this_month(user_id: str) -> bool:
-    """本月是否已使用過「滿 4 堂折 NT$20」（每帳號每月限一次，依伺服器日曆月）。"""
-    now = datetime.datetime.now()
+    """本月是否已使用過「滿 4 堂折 NT$20」（每帳號每月限一次，依台灣日曆月）。"""
+    now = _taiwan_now()
     current = (now.year, now.month)
     orders = _cached_records("Orders")
     for order in orders:
@@ -1451,8 +1474,8 @@ def create_order():
         quantity = int(data.get("quantity", 1))
     except (ValueError, TypeError):
         return jsonify({"error": "堂數格式錯誤"}), 400
-    if quantity < 1 or quantity > 50:
-        return jsonify({"error": "購買堂數需在 1–50 之間"}), 400
+    if quantity < 1 or quantity > 18:
+        return jsonify({"error": "購買堂數需在 1–18 之間"}), 400
 
     coupon_code = str(data.get("coupon_code", "") or "").strip().upper()
 
@@ -1475,7 +1498,7 @@ def create_order():
     try:
         ws = _ensure_orders_sheet()
         order_id = secrets.token_hex(8)
-        now = datetime.datetime.now().isoformat()
+        now = _taiwan_now().isoformat()
         ws.append_row([
             order_id,
             str(user["user_id"]),
@@ -1589,7 +1612,7 @@ def _upsert_oauth_user(
     # New user – credits start at 0, must be purchased via orders
     user_id = provider_uid
     token = secrets.token_hex(32)
-    now = datetime.datetime.now().isoformat()
+    now = _taiwan_now().isoformat()
     ws.append_row([user_id, email, "", name, 0, now, token])
     # If LINE Login, record userId and enable LINE notifications
     if line_user_id:
@@ -1814,7 +1837,7 @@ def admin_list_users():
         users = _cached_records("Users")
         # 不回傳密碼 hash 與 token
         safe = []
-        today = datetime.date.today()
+        today = _taiwan_today()
         for u in users:
             lots = _load_credit_lots(u)
             active_lots = []
@@ -1912,7 +1935,7 @@ def admin_update_credits(user_id):
                             "expire_at": new_expire,
                         })]
                 _persist_user_credit_state(ws, row, lots, str(user_id))
-                today = datetime.date.today()
+                today = _taiwan_today()
                 out_credits = _active_credits_from_lots(lots, today)
                 out_expire = _credit_lots_summary_expiry(lots, today)
                 return jsonify({
@@ -2189,11 +2212,11 @@ def admin_create_booking():
             return jsonify({"error": "此課程日期已超過會員目前可用批次的有效期限"}), 400
 
         booking_id = secrets.token_hex(8)
-        now = datetime.datetime.now().isoformat()
+        now = _taiwan_now().isoformat()
         class_datetime = f"{target_class['date']} {target_class['time']}"
 
         lots = _load_credit_lots(target_user)
-        today = datetime.date.today()
+        today = _taiwan_today()
         class_date = datetime.date.fromisoformat(str(target_class.get("date", "")))
         new_lots, src_oid = _consume_one_credit_for_class(lots, class_date, today)
         if new_lots is None:
@@ -2290,7 +2313,7 @@ def admin_cancel_booking(booking_id):
                 lots = _load_credit_lots(target_user)
                 new_lots = _refund_credit_to_lot(lots, src_oid)
                 _persist_user_credit_state(users_ws, owner_row, new_lots, str(b.get("user_id")))
-                new_credits = _active_credits_from_lots(new_lots, datetime.date.today())
+                new_credits = _active_credits_from_lots(new_lots, _taiwan_today())
 
             _invalidate_cache("Users", "Classes", "Bookings")
 
@@ -2347,7 +2370,7 @@ def admin_confirm_order(order_id):
     if override_expiry_raw:
         try:
             d = datetime.date.fromisoformat(override_expiry_raw)
-            if d < datetime.date.today():
+            if d < _taiwan_today():
                 return jsonify({"error": "有效期限不能早於今天"}), 400
             override_expiry = d.isoformat()
         except ValueError:
@@ -2387,11 +2410,11 @@ def admin_confirm_order(order_id):
                 "expire_at": batch_expiry,
             }))
 
-            now = datetime.datetime.now().isoformat()
+            now = _taiwan_now().isoformat()
             user_target_uid = str(target_user.get("user_id"))
             order_row = i + 2
             _persist_user_credit_state(users_ws, user_row, lots, user_target_uid)
-            today = datetime.date.today()
+            today = _taiwan_today()
             new_credits = _active_credits_from_lots(lots, today)
             summary_exp = _credit_lots_summary_expiry(lots, today)
 
@@ -2635,7 +2658,7 @@ def seed_data():
         # Add a demo user: demo@test.com / password123
         demo_id = secrets.token_hex(8)
         demo_token = secrets.token_hex(32)
-        now = datetime.datetime.now().isoformat()
+        now = _taiwan_now().isoformat()
         users_ws.append_row([demo_id, "demo@test.com", _hash("password123"), "Demo User", 10, now, demo_token])
 
         # Classes sheet

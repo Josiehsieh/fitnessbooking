@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { Screen } from '../App';
 import { api, Order } from '../api/client';
+import { getTaiwanTodayISO, getTaiwanYearMonth, addDaysToISODate, parseDatetimeAsTaiwan } from '../utils/taiwanTime';
 
 interface AdminScreenProps {
   onNavigate: (screen: Screen) => void;
@@ -384,35 +385,37 @@ const inputCls = "w-full px-4 py-2.5 rounded-xl bg-surface-container-low border-
 
 type DatePreset = 'all' | 'today' | 'week' | 'month' | 'upcoming' | 'past' | 'custom';
 
+// 全部以「台灣時間（UTC+8）」為準。先前的版本用 new Date() 取本地午夜後再
+// toISOString()，會被轉成 UTC，導致台灣時區的「今天」往前位移一天（今日 / 已過期
+// 標記與日期篩選整批錯一天）。改用 taiwanTime 工具並只用 UTC getter 計算，避免位移。
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
 function todayISO(): string {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString().slice(0, 10);
+  return getTaiwanTodayISO();
 }
 
 function addDays(iso: string, days: number): string {
-  const d = new Date(iso + 'T00:00:00');
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return addDaysToISODate(iso, days);
 }
 
 function startOfWeekISO(): string {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  const dow = (d.getDay() + 6) % 7; // Monday = 0
-  d.setDate(d.getDate() - dow);
-  return d.toISOString().slice(0, 10);
+  const today = getTaiwanTodayISO();
+  const [y, m, d] = today.split('-').map(Number);
+  const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7; // Monday = 0
+  return addDaysToISODate(today, -dow);
 }
 
 function endOfMonthISO(): string {
-  const d = new Date();
-  const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-  return end.toISOString().slice(0, 10);
+  const { year, monthIndex } = getTaiwanYearMonth();
+  const last = new Date(Date.UTC(year, monthIndex + 1, 0));
+  return `${last.getUTCFullYear()}-${pad2(last.getUTCMonth() + 1)}-${pad2(last.getUTCDate())}`;
 }
 
 function startOfMonthISO(): string {
-  const d = new Date();
-  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+  const { year, monthIndex } = getTaiwanYearMonth();
+  return `${year}-${pad2(monthIndex + 1)}-01`;
 }
 
 function ClassesTab() {
@@ -960,6 +963,16 @@ function BookingsTab() {
   if (error) return <ErrorBlock message={error} />;
 
   const filtered = filter === 'all' ? bookings : bookings.filter((b) => b.status === filter);
+  const bookableClasses = classes
+    .filter((c) => {
+      const parsed = parseDatetimeAsTaiwan(`${c.date} ${c.time}`);
+      if (parsed) return parsed.getTime() > Date.now();
+      return c.date >= getTaiwanTodayISO();
+    })
+    .sort((a, b) => {
+      if (a.date !== b.date) return a.date.localeCompare(b.date);
+      return a.time.localeCompare(b.time);
+    });
 
   const handleDeleteBooking = async (bookingId: string) => {
     if (!confirm('確定要刪除此筆預約？系統會回補該會員 1 堂並釋出名額。')) return;
@@ -979,6 +992,10 @@ function BookingsTab() {
   const handleCreateBooking = async () => {
     if (!selectedUserId || !selectedClassId) {
       alert('請先選擇會員與課程');
+      return;
+    }
+    if (!bookableClasses.some((c) => c.class_id === selectedClassId)) {
+      alert('請選擇尚未開始的未來課程');
       return;
     }
     setCreateBusy(true);
@@ -1032,7 +1049,7 @@ function BookingsTab() {
             className="px-4 py-2.5 rounded-xl bg-surface-container-high border border-outline-variant/30"
           >
             <option value="">選擇課程</option>
-            {classes.map((c) => (
+            {bookableClasses.map((c) => (
               <option key={c.class_id} value={c.class_id}>
                 {c.date} {c.time}｜{c.name}（{c.booked_spots}/{c.total_spots}）
               </option>
@@ -1309,40 +1326,32 @@ function ConfirmOrderModal({
   onCancel: () => void;
   onSubmit: (expireAt: string) => void;
 }) {
+  // All dates computed in Taiwan time (UTC+8) to match the backend and avoid
+  // the admin browser's timezone shifting the default / minimum expiry by a day.
+  const { year: twYear, monthIndex: twMonth } = getTaiwanYearMonth();
+  const today = getTaiwanTodayISO();
+
   // Default expiry follows backend rule:
   // 1-8 classes => end of current month; >8 classes => two months from today.
   const defaultExpiry = (() => {
-    const now = new Date();
     if ((order.quantity ?? 0) > 8) {
-      const d = new Date(now);
-      d.setMonth(d.getMonth() + 2);
-      const pad = (n: number) => String(n).padStart(2, '0');
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      const [y, m, d] = today.split('-').map(Number);
+      const t = new Date(Date.UTC(y, m - 1 + 2, d));
+      return `${t.getUTCFullYear()}-${pad2(t.getUTCMonth() + 1)}-${pad2(t.getUTCDate())}`;
     }
-    const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${last.getFullYear()}-${pad(last.getMonth() + 1)}-${pad(last.getDate())}`;
-  })();
-  const today = (() => {
-    const n = new Date();
-    const pad = (x: number) => String(x).padStart(2, '0');
-    return `${n.getFullYear()}-${pad(n.getMonth() + 1)}-${pad(n.getDate())}`;
+    const last = new Date(Date.UTC(twYear, twMonth + 1, 0));
+    return `${last.getUTCFullYear()}-${pad2(last.getUTCMonth() + 1)}-${pad2(last.getUTCDate())}`;
   })();
 
   const [expireAt, setExpireAt] = useState(defaultExpiry);
 
   const setRelative = (days: number) => {
-    const d = new Date();
-    d.setDate(d.getDate() + days);
-    const pad = (x: number) => String(x).padStart(2, '0');
-    setExpireAt(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
+    setExpireAt(addDaysToISODate(today, days));
   };
 
   const setEndOfMonth = (monthsAhead: number) => {
-    const now = new Date();
-    const d = new Date(now.getFullYear(), now.getMonth() + monthsAhead + 1, 0);
-    const pad = (x: number) => String(x).padStart(2, '0');
-    setExpireAt(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
+    const last = new Date(Date.UTC(twYear, twMonth + monthsAhead + 1, 0));
+    setExpireAt(`${last.getUTCFullYear()}-${pad2(last.getUTCMonth() + 1)}-${pad2(last.getUTCDate())}`);
   };
 
   const invalid = !expireAt || expireAt < today;

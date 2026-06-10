@@ -16,6 +16,7 @@ const PRICE_PER_CLASS = 150;
 const BULK_MIN = 4;
 const BULK_DISCOUNT = 20;
 const COUPON_DISCOUNT = 20;
+const MAX_PURCHASE_QUANTITY = 18;
 
 function calcPrice(qty: number, couponApplied: boolean, bulkDiscountEligible: boolean) {
   const subtotal = qty * PRICE_PER_CLASS;
@@ -76,7 +77,7 @@ export default function CheckoutScreen({
   }, [user?.id]);
 
   const changeQty = (delta: number) => {
-    setQuantity((q) => Math.max(1, Math.min(50, q + delta)));
+    setQuantity((q) => Math.max(1, Math.min(MAX_PURCHASE_QUANTITY, q + delta)));
   };
 
   const applyCoupon = () => {
@@ -200,7 +201,7 @@ export default function CheckoutScreen({
               <div>
                 <h2 className="text-xl font-bold text-on-surface mb-1">選擇購買堂數</h2>
                 <p className="text-sm text-on-surface-variant font-medium">
-                  每堂 NT${PRICE_PER_CLASS}。課程 {BULK_MIN} 堂（含）以上折扣 NT${BULK_DISCOUNT}，每個帳號每個月限一次。
+                  每堂 NT${PRICE_PER_CLASS}。單筆最多 {MAX_PURCHASE_QUANTITY} 堂；{BULK_MIN} 堂（含）以上折扣 NT${BULK_DISCOUNT}，每個帳號每個月限一次。
                 </p>
               </div>
 
@@ -222,7 +223,7 @@ export default function CheckoutScreen({
 
                   <button
                     onClick={() => changeQty(1)}
-                    disabled={quantity >= 50}
+                    disabled={quantity >= MAX_PURCHASE_QUANTITY}
                     className="w-14 h-14 rounded-full bg-surface-container flex items-center justify-center text-primary hover:bg-primary-container transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     <Plus className="w-5 h-5" />

@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { Sparkles, ArrowRight, CalendarDays, Rocket, Loader2, LogOut, Receipt, Clock, AlertCircle, CheckCircle2, XCircle, User as UserIcon, Lock, Save, ChevronDown, ChevronUp, Bell, Mail, MessageSquare, RefreshCw, History } from 'lucide-react';
 import { Screen } from '../App';
 import { api, Booking, User, Order, NotificationPrefs, clearGetCache } from '../api/client';
+import { formatDatetimeInTaiwan, parseDatetimeAsTaiwan } from '../utils/taiwanTime';
 
 interface DashboardScreenProps {
   onNavigate: (screen: Screen) => void;
@@ -23,29 +24,15 @@ function getImage(name: string) {
   return CLASS_IMAGES.default;
 }
 
-function formatDatetime(dt: string) {
-  if (!dt) return '--';
-  const [date, time] = dt.split(' ');
-  const [, month, day] = date.split('-');
-  return `${Number(month)}月${Number(day)}日 · ${time}`;
-}
-
-function parseClassDatetime(dt: string): Date | null {
-  if (!dt) return null;
-  const iso = dt.replace(' ', 'T');
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? null : d;
-}
-
 function canCancel(dt: string): boolean {
-  const d = parseClassDatetime(dt);
+  const d = parseDatetimeAsTaiwan(dt);
   if (!d) return true;
   const hoursUntil = (d.getTime() - Date.now()) / 3_600_000;
   return hoursUntil >= 6;
 }
 
 function isPastClass(dt: string): boolean {
-  const d = parseClassDatetime(dt);
+  const d = parseDatetimeAsTaiwan(dt);
   if (!d) return false;
   return d.getTime() < Date.now();
 }
@@ -450,7 +437,7 @@ function BookingCard({ booking, past, cancelling, onCancel }: BookingCardProps) 
             </h4>
             <p className="text-xs text-outline flex items-center gap-1.5 mt-1 font-medium">
               <CalendarDays className="w-3.5 h-3.5" />
-              {formatDatetime(booking.class_datetime)}
+              {formatDatetimeInTaiwan(booking.class_datetime)}
             </p>
           </div>
           <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider bg-surface-container text-on-surface-variant px-2.5 py-1 rounded-full">
@@ -481,7 +468,7 @@ function BookingCard({ booking, past, cancelling, onCancel }: BookingCardProps) 
           <h3 className="text-xl font-bold font-headline mb-2">{booking.class_name}</h3>
           <p className="text-on-surface-variant text-sm flex items-center justify-center md:justify-start gap-2 font-medium">
             <CalendarDays className="w-4 h-4" />
-            {formatDatetime(booking.class_datetime)}
+            {formatDatetimeInTaiwan(booking.class_datetime)}
           </p>
         </div>
         <div className="shrink-0 w-full md:w-auto mt-4 md:mt-0">
